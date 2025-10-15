@@ -609,14 +609,14 @@ class EmbeddingStrategy(CrawlStrategy):
     async def _get_embeddings(self, texts: List[str]) -> Any:
         """Get embeddings using configured method"""
         from .utils import get_text_embeddings
-        embedding_llm_config = {
-            'provider': 'openai/text-embedding-3-small',
-            'api_token': os.getenv('OPENAI_API_KEY')
-        }
+        ###embedding_llm_config = {
+        ###    'provider': 'openai/text-embedding-3-small',
+        ###    'api_token': os.getenv('OPENAI_API_KEY')
+        ###}
         return await get_text_embeddings(
-            texts, 
-            embedding_llm_config,
-            self.embedding_model
+            texts=texts, 
+            llm_config=None,
+            model_name=self.embedding_model
         )
     
     def _compute_distance_matrix(self, query_embeddings: Any, kb_embeddings: Any) -> Any:
@@ -716,7 +716,30 @@ class EmbeddingStrategy(CrawlStrategy):
         
         # Randomly shuffle for proper train/val split (keeping original query in training)
         import random
-        
+        # TODO change back
+        queries_test = [
+            "Welche Dienstleistungen bietet ein Fachbetrieb für Karosseriebau und Fahrzeuglackierung an?",
+            "Gibt es Werkstätten, die PKW, LKW, Busse und Nutzfahrzeuge lackieren und reparieren?",
+            "Wo kann ich eine Unfallinstandsetzung oder Smart Repair für mein Auto durchführen lassen?",
+            "Fachbetriebe für Karosseriearbeiten und Lackierungen in meiner Nähe",
+            "Angebot von Karosseriebau, Fahrzeugreparatur und Lackierarbeiten",
+            "Spezialisierte Werkstätten für Lackierung und Karosseriereparatur von Nutzfahrzeugen",
+            "Welche Services umfasst ein Betrieb für Unfallinstandsetzung und Smart Repair?",
+            "Kosten und Leistungen für Lackierung und Karosseriebau bei Fahrzeugen",
+            "Autoreparatur und Lackierarbeiten: Fachbetrieb für verschiedene Fahrzeugtypen",
+            "Fahrzeugreparatur, Lackierung und Karosseriearbeiten: Anbieter finden"
+        ]
+        other_queries = queries_test.copy()
+        random.shuffle(other_queries)
+
+        n_validation = max(2, int(len(other_queries) * 0.2))  # At least 2 for validation
+        val_queries = other_queries[-n_validation:]
+        train_queries = [query] + other_queries[:-n_validation]
+
+        train_embeddings = await self._get_embeddings(train_queries)
+        self._validation_queries = val_queries
+        return train_embeddings, train_queries
+        """
         # Keep original query always in training
         other_queries = variations['queries'].copy()
         random.shuffle(other_queries)
@@ -733,6 +756,7 @@ class EmbeddingStrategy(CrawlStrategy):
         self._validation_queries = val_queries
         
         return train_embeddings, train_queries
+        """
     
     def compute_coverage_shape(self, query_points: Any, alpha: float = 0.5):
         """Find the minimal shape that covers all query points using alpha shape"""
@@ -847,7 +871,9 @@ class EmbeddingStrategy(CrawlStrategy):
                 'provider': 'openai/text-embedding-3-small',
                 'api_token': os.getenv('OPENAI_API_KEY')
             }
-            new_embeddings = await get_text_embeddings(texts_to_embed, embedding_llm_config, self.embedding_model)
+            # TODO: maybe change back
+            ###new_embeddings = await get_text_embeddings(texts_to_embed, embedding_llm_config, self.embedding_model)
+            new_embeddings = await get_text_embeddings(texts_to_embed, None, self.embedding_model)
 
             # Cache the new embeddings
             for link, text, embedding in zip(links_to_embed, texts_to_embed, new_embeddings):
@@ -1188,7 +1214,9 @@ class EmbeddingStrategy(CrawlStrategy):
             'provider': 'openai/text-embedding-3-small',
             'api_token': os.getenv('OPENAI_API_KEY')
         }        
-        new_embeddings = await get_text_embeddings(new_texts, embedding_llm_config, self.embedding_model)
+        # TODO: maybe change back
+        ###new_embeddings = await get_text_embeddings(new_texts, embedding_llm_config, self.embedding_model)
+        new_embeddings = await get_text_embeddings(new_texts, None, self.embedding_model)
 
         # Deduplicate embeddings before adding to KB
         if state.kb_embeddings is None:

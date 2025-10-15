@@ -497,6 +497,87 @@ class DomainFilter(URLFilter):
         self._update_stats(False)
         return False
 
+class DomainFilterWithoutSubdomains(URLFilter):
+    """Optimized domain filter with fast lookups and caching"""
+
+    __slots__ = ("_allowed_domains", "_blocked_domains", "_domain_cache")
+
+    # Regex for fast domain extraction
+    _DOMAIN_REGEX = re.compile(r"://([^/]+)")
+
+    def __init__(
+        self,
+        allowed_domains: Union[str, List[str]] = None,
+        blocked_domains: Union[str, List[str]] = None,
+    ):
+        super().__init__()
+
+        # Convert inputs to frozensets for immutable, fast lookups
+        self._allowed_domains = (
+            frozenset(self._normalize_domains(allowed_domains))
+            if allowed_domains
+            else None
+        )
+        self._blocked_domains = (
+            frozenset(self._normalize_domains(blocked_domains))
+            if blocked_domains
+            else frozenset()
+        )
+
+    @staticmethod
+    def _normalize_domains(domains: Union[str, List[str]]) -> Set[str]:
+        """Fast domain normalization"""
+        if isinstance(domains, str):
+            return {domains.lower()}
+        return {d.lower() for d in domains}
+    
+    @staticmethod
+    def _is_domain_equal(domain: str, domain2: str) -> bool:
+        """Check if domain is equal to domain2"""
+        # Normalize by removing leading 'www.' to treat it as equivalent
+        # to the apex domain during equality checks
+        def _strip_www(d: str) -> str:
+            return d[4:] if d.startswith("www.") else d
+
+        return _strip_www(domain) == _strip_www(domain2)
+
+    @staticmethod
+    @lru_cache(maxsize=10000)
+    def _extract_domain(url: str) -> str:
+        """Ultra-fast domain extraction with regex and caching"""
+        match = DomainFilterWithoutSubdomains._DOMAIN_REGEX.search(url)
+        return match.group(1).lower() if match else ""
+
+    def apply(self, url: str) -> bool:
+        """Optimized domain checking with early returns"""
+        # Skip processing if no filters
+        if not self._blocked_domains and self._allowed_domains is None:
+            self._update_stats(True)
+            return True
+
+        domain = self._extract_domain(url)
+
+        # Check for blocked domains
+        for blocked in self._blocked_domains:
+            if self._is_domain_equal(domain, blocked):
+                self._update_stats(False)
+                return False
+
+        # If no allowed domains specified, accept all non-blocked
+        if self._allowed_domains is None:
+            self._update_stats(True)
+            return True
+
+        # Check if domain matches any allowed domain
+        for allowed in self._allowed_domains:
+            if self._is_domain_equal(domain, allowed):
+                self._update_stats(True)
+                return True
+
+        # No matches found
+        self._update_stats(False)
+        return False
+        
 
 class ContentRelevanceFilter(URLFilter):
     """BM25-based relevance filter using head section content"""

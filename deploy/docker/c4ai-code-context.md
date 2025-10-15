@@ -3571,7 +3571,7 @@ from .model_loader import (
     calculate_batch_size
 )
 
-from .types import LLMConfig, create_llm_config
+from ._types import LLMConfig, create_llm_config
 
 from functools import partial
 import numpy as np
@@ -5604,7 +5604,7 @@ from .utils import (
     extract_xml_data,
     merge_chunks,
 )
-from .types import LLMConfig
+from ._types import LLMConfig
 from .config import DEFAULT_PROVIDER, OVERLAP_RATE, WORD_TOKEN_RATE
 from abc import ABC, abstractmethod
 import math
@@ -6669,7 +6669,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, Tuple
 from .models import MarkdownGenerationResult
 from .html2text import CustomHTML2Text
-# from .types import RelevantContentFilter
+# from ._types import RelevantContentFilter
 from .content_filter_strategy import RelevantContentFilter
 import re
 from urllib.parse import urljoin
@@ -9203,6 +9203,7 @@ if __name__ == "__main__":
 from .base_strategy import DeepCrawlDecorator, DeepCrawlStrategy
 from .bfs_strategy import BFSDeepCrawlStrategy
 from .bff_strategy import BestFirstCrawlingStrategy
+from .blf_strategy import BestLinkFirstCrawlingStrategy
 from .dfs_strategy import DFSDeepCrawlStrategy
 from .filters import (
     FilterChain,
@@ -9259,7 +9260,7 @@ from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional, Set, List, Dict
 from functools import wraps
 from contextvars import ContextVar
-from ..types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
+from .._types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
 
 
 class DeepCrawlDecorator:
@@ -9431,7 +9432,7 @@ from .filters import FilterChain
 from .scorers import URLScorer
 from . import DeepCrawlStrategy
 
-from ..types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
+from .._types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
 
 from math import inf as infinity
 
@@ -9692,7 +9693,7 @@ from ..models import TraversalStats
 from .filters import FilterChain
 from .scorers import URLScorer
 from . import DeepCrawlStrategy  
-from ..types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult
+from .._types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult
 from ..utils import normalize_url_for_deep_crawl, efficient_normalize_url_for_deep_crawl
 from math import inf as infinity
 

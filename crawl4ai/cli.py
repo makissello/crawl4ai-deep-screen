@@ -31,6 +31,7 @@ from crawl4ai import (
     BFSDeepCrawlStrategy,
     DFSDeepCrawlStrategy,
     BestFirstCrawlingStrategy,
+    BestLinkFirstCrawlingStrategy,
 )
 from crawl4ai.config import USER_SETTINGS
 from litellm import completion
@@ -1175,6 +1176,11 @@ Always return valid, properly formatted JSON."""
                 )
             elif deep_crawl == "best-first":
                 crawler_cfg.deep_crawl_strategy = BestFirstCrawlingStrategy(
+                    max_depth=3,
+                    max_pages=max_pages
+                )
+            elif deep_crawl == "best-link-first":
+                crawler_cfg.deep_crawl_strategy = BestLinkFirstCrawlingStrategy(
                     max_depth=3,
                     max_pages=max_pages
                 )

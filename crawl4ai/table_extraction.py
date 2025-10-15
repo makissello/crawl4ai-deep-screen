@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any, Union, Tuple
 from lxml import etree
 import re
 import json
-from .types import LLMConfig, create_llm_config
+from ._types import LLMConfig, create_llm_config
 from .utils import perform_completion_with_backoff, sanitize_html
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed

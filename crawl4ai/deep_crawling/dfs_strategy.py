@@ -3,7 +3,7 @@ from typing import AsyncGenerator, Optional, Set, Dict, List, Tuple
 
 from ..models import CrawlResult
 from .bfs_strategy import BFSDeepCrawlStrategy  # noqa
-from ..types import AsyncWebCrawler, CrawlerRunConfig
+from .._types import AsyncWebCrawler, CrawlerRunConfig
 
 class DFSDeepCrawlStrategy(BFSDeepCrawlStrategy):
     """

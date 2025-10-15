@@ -10,14 +10,13 @@ from .filters import FilterChain
 from .scorers import URLScorer
 from . import DeepCrawlStrategy
 
-from ..types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
+from .._types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
 from ..utils import normalize_url_for_deep_crawl
 
 from math import inf as infinity
 
 # Configurable batch size for processing items from the priority queue
 BATCH_SIZE = 10
-
 
 class BestFirstCrawlingStrategy(DeepCrawlStrategy):
     """

@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from urllib.parse import urlparse, unquote
 import re
 import logging
 from functools import lru_cache
 from array import array
+from rapidfuzz import fuzz
 import ctypes
 import platform
 PLATFORM = platform.system()
@@ -186,6 +187,46 @@ class KeywordRelevanceScorer(URLScorer):
             return 1.0
             
         return matches / len(self._keywords)
+
+class FuzzyKeywordRelevanceScorer(URLScorer):
+    __slots__ = ('_weight', '_stats', '_keywords', '_case_sensitive')
+    
+    def __init__(self, keywords: List[str], weight: float = 1.0, case_sensitive: bool = False):
+        super().__init__(weight=weight)
+        self._case_sensitive = case_sensitive
+        self._keywords = [k if case_sensitive else k.lower() for k in keywords]
+
+    @lru_cache(maxsize=10000)
+    def _url_bytes(self, url: str) -> bytes:
+        """Cache decoded URL bytes"""
+        return url.encode('utf-8') if self._case_sensitive else url.lower().encode('utf-8')
+    
+    def _tokenize_url(self, url: str) -> List[str]:
+        url = url if self._case_sensitive else url.lower()
+        return re.findall(r"[a-z0-9]+", url)
+
+    def _calculate_score(self, url: str) -> float:
+        """Calculate fuzzy keyword relevance score for URL."""
+        if not self._case_sensitive:
+            url = url.lower()
+            
+        matches = sum(1 for k in self._keywords if fuzz.ratio(k, url) > 80)
+        
+        if not matches:
+            url_tokens = self._tokenize_url(url)
+            joined = " ".join(url_tokens)
+            scores = [
+                max(
+                    fuzz.partial_ratio(k, joined),
+                    fuzz.token_set_ratio(k, joined)
+                ) / 100.0
+                for k in self._keywords
+            ]
+            if not scores:
+                return 0.0
+            return sum(scores) / len(scores)
+        
+        return 1.0
 
 class PathDepthScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_optimal_depth')  # Remove _url_cache
@@ -517,3 +558,28 @@ class DomainAuthorityScorer(URLScorer):
             
         # Regular path: check all domains
         return self._domain_weights.get(domain, self._default_weight)
+
+class EmbeddingScorer(URLScorer):
+    __slots__ = ('_weight', '_stats', '_meta_by_url', '_reference_embeddings', '_embedding_model', '_embedding_llm_config')
+
+    def __init__(self, embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2", embedding_llm_config: Dict = None, reference_embeddings = None, weight: float = 1.0):
+        super().__init__(weight=weight)
+        self._embedding_model = embedding_model
+        self._embedding_llm_config = embedding_llm_config
+        self._reference_embeddings = reference_embeddings
+        self._meta_by_url: Dict[str, Dict[str, Any]] = {}
+    
+    def ingest_meta(self, url: str, head_data: Dict[str, Any]) -> None:
+        if url and head_data:
+            self._meta_by_url[url] = head_data
+        
+    def _calculate_score(self, url: str) -> float:
+        """Calculate embedding score for URL."""
+        meta = self._meta_by_url.get(url, {})
+        # TODO: use meta to calculate score
+        
+        if self._reference_embeddings is None:
+            return 0.0
+        
+        url_embedding = self._embedding_model.encode(url)
+        return np.dot(url_embedding, self._reference_embeddings) / (np.linalg.norm(url_embedding) * np.linalg.norm(self._reference_embeddings))

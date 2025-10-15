@@ -70,16 +70,19 @@ BFSDeepCrawlStrategy = Union['BFSDeepCrawlStrategyType']
 FilterChain = Union['FilterChainType']
 ContentTypeFilter = Union['ContentTypeFilterType']
 DomainFilter = Union['DomainFilterType']
+DomainFilterWithoutSubdomains = Union['DomainFilterWithoutSubdomainsType']
 URLFilter = Union['URLFilterType']
 FilterStats = Union['FilterStatsType']
 SEOFilter = Union['SEOFilterType']
 KeywordRelevanceScorer = Union['KeywordRelevanceScorerType']
+FuzzyKeywordRelevanceScorer = Union['FuzzyKeywordRelevanceScorerType']
 URLScorer = Union['URLScorerType']
 CompositeScorer = Union['CompositeScorerType']
 DomainAuthorityScorer = Union['DomainAuthorityScorerType']
 FreshnessScorer = Union['FreshnessScorerType']
 PathDepthScorer = Union['PathDepthScorerType']
 BestFirstCrawlingStrategy = Union['BestFirstCrawlingStrategyType']
+BestLinkFirstCrawlingStrategy = Union['BestLinkFirstCrawlingStrategyType']
 DFSDeepCrawlStrategy = Union['DFSDeepCrawlStrategyType']
 DeepCrawlDecorator = Union['DeepCrawlDecoratorType']
 
@@ -174,16 +177,19 @@ if TYPE_CHECKING:
         FilterChain as FilterChainType,
         ContentTypeFilter as ContentTypeFilterType,
         DomainFilter as DomainFilterType,
+        DomainFilterWithoutSubdomains as DomainFilterWithoutSubdomainsType,
         URLFilter as URLFilterType,
         FilterStats as FilterStatsType,
         SEOFilter as SEOFilterType,
         KeywordRelevanceScorer as KeywordRelevanceScorerType,
+        FuzzyKeywordRelevanceScorer as FuzzyKeywordRelevanceScorerType,
         URLScorer as URLScorerType,
         CompositeScorer as CompositeScorerType,
         DomainAuthorityScorer as DomainAuthorityScorerType,
         FreshnessScorer as FreshnessScorerType,
         PathDepthScorer as PathDepthScorerType,
         BestFirstCrawlingStrategy as BestFirstCrawlingStrategyType,
+        BestLinkFirstCrawlingStrategy as BestLinkFirstCrawlingStrategyType,
         DFSDeepCrawlStrategy as DFSDeepCrawlStrategyType,
         DeepCrawlDecorator as DeepCrawlDecoratorType,
     )
