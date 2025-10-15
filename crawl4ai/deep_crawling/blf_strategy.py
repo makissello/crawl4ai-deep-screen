@@ -18,7 +18,7 @@ from ..utils import normalize_url_for_deep_crawl
 from math import inf as infinity
 
 # Configurable batch size for processing items from the priority queue
-BATCH_SIZE = 1
+BATCH_SIZE = 10
 
 
 class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
@@ -42,6 +42,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         url_scorer: Optional[URLScorer] = None,
         include_external: bool = False,
         max_pages: int = infinity,
+        batch_size: int = BATCH_SIZE,
         logger: Optional[logging.Logger] = None,
     ):
         self.max_depth = max_depth
@@ -49,6 +50,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self.url_scorer = url_scorer
         self.include_external = include_external
         self.max_pages = max_pages
+        self.batch_size = batch_size
         self.logger = logger or logging.getLogger(__name__)
         self.stats = TraversalStats(start_time=datetime.now())
         self._cancel_event = asyncio.Event()
@@ -70,7 +72,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
             row.append("")
 
         # Ensure output directory
-        output_file = "discovered_links.csv"
+        output_file = "discovered_links2.csv"
         file_exists = os.path.isfile(output_file)
 
         with open(output_file, "a", newline="", encoding="utf-8") as f:
@@ -331,7 +333,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 self.logger.debug(f"  URL: {qurl}, Score: {-qscore}, Depth: {qdepth}, Parent: {qparent}")
 
             remaining = self.max_pages - self._pages_crawled
-            batch_size = min(BATCH_SIZE, remaining)
+            batch_size = min(self.batch_size, remaining)
             if batch_size <= 0:
                 self.logger.info(f"Max pages limit ({self.max_pages}) reached, stopping crawl")
                 break

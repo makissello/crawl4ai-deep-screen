@@ -242,12 +242,18 @@ class LXMLWebScrapingStrategy(ContentScrapingStrategy):
         exclude_domains = set(kwargs.get("exclude_domains", []))
 
         # Process links
+        # Determine effective base URL for resolving relative links.
+        # If a <base href> is present, resolve it against the page URL instead of
+        # replacing the URL directly. This prevents producing root-relative paths
+        # like "/de/..." without scheme/netloc.
+        effective_base_url = url
         try:
             base_element = element.xpath("//head/base[@href]")
             if base_element:
                 base_href = base_element[0].get("href", "").strip()
                 if base_href:
-                    url = base_href
+                    from urllib.parse import urljoin
+                    effective_base_url = urljoin(url, base_href)
         except Exception as e:
             self._log("error", f"Error extracting base URL: {str(e)}", "SCRAPE")
             pass
@@ -258,7 +264,7 @@ class LXMLWebScrapingStrategy(ContentScrapingStrategy):
                 continue
 
             try:
-                normalized_href = normalize_url(href, url)
+                normalized_href = normalize_url(href, effective_base_url)
                 link_data = {
                     "href": normalized_href,
                     "text": link.text_content().strip(),
