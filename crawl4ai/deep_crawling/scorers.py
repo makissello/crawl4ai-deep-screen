@@ -2,9 +2,13 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from urllib.parse import urlparse, unquote
+from ..utils import HeadPeekr
+from ..utils import get_text_embeddings, cosine_similarity
+import numpy as np
 import re
 import logging
 from functools import lru_cache
+import inspect
 from array import array
 from rapidfuzz import fuzz
 import ctypes
@@ -62,12 +66,14 @@ class ScoringStats:
             self._max_score = self._total_score / self._urls_scored if self._urls_scored else 0.0
         return self._max_score
 class URLScorer(ABC):
-    __slots__ = ('_weight', '_stats')
+    __slots__ = ('_weight', '_stats', '_logger')
     
-    def __init__(self, weight: float = 1.0):
+    def __init__(self, weight: float = 1.0, logger: Optional[logging.Logger] = None):
         # Store weight directly as float32 for memory efficiency
         self._weight = ctypes.c_float(weight).value
         self._stats = ScoringStats()
+        # Dedicated logger for scorers; caller can inject a specific logger
+        self._logger = logger or logging.getLogger("deep_crawl.scorer")
     
     @abstractmethod
     def _calculate_score(self, url: str) -> float:
@@ -76,8 +82,29 @@ class URLScorer(ABC):
     
     def score(self, url: str) -> float:
         """Calculate weighted score with minimal overhead."""
-        score = self._calculate_score(url) * self._weight
+        result = self._calculate_score(url)
+        if inspect.isawaitable(result):
+            raise RuntimeError("Async scorer used in sync path; call ascore(url) instead")
+        score = result * self._weight
         self._stats.update(score)
+        # Light-weight INFO log for visibility when enabled by caller's logger level
+        try:
+            self._logger.info(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
+        except Exception:
+            pass
+        return score
+
+    async def ascore(self, url: str) -> float:
+        """Async-friendly scoring: awaits if implementation returns awaitable."""
+        result = self._calculate_score(url)
+        if inspect.isawaitable(result):
+            result = await result
+        score = result * self._weight
+        self._stats.update(score)
+        try:
+            self._logger.info(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
+        except Exception:
+            pass
         return score
     
     @property
@@ -92,7 +119,7 @@ class URLScorer(ABC):
 class CompositeScorer(URLScorer):
     __slots__ = ('_scorers', '_normalize', '_weights_array', '_score_array')
     
-    def __init__(self, scorers: List[URLScorer], normalize: bool = True):
+    def __init__(self, scorers: List[URLScorer], normalize: bool = True, logger: Optional[logging.Logger] = None):
         """Initialize composite scorer combining multiple scoring strategies.
         
         Optimized for:
@@ -105,7 +132,7 @@ class CompositeScorer(URLScorer):
             scorers: List of scoring strategies to combine
             normalize: Whether to normalize final score by scorer count
         """
-        super().__init__(weight=1.0)
+        super().__init__(weight=1.0, logger=logger)
         self._scorers = scorers
         self._normalize = normalize
         
@@ -158,11 +185,27 @@ class CompositeScorer(URLScorer):
         self.stats.update(score)
         return score
 
+    async def ascore(self, url: str) -> float:
+        """Async-friendly combined scoring using concurrent awaits."""
+        # Import locally to avoid global dependency when unused
+        import asyncio
+        if not self._scorers:
+            self.stats.update(0.0)
+            return 0.0
+        # Kick off async scoring for all scorers (all have ascore on base)
+        tasks = [s.ascore(url) for s in self._scorers]
+        results = await asyncio.gather(*tasks)
+        total_score = sum(results)
+        if self._normalize:
+            total_score = total_score / len(self._scorers)
+        self.stats.update(total_score)
+        return total_score
+
 class KeywordRelevanceScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_keywords', '_case_sensitive')
     
-    def __init__(self, keywords: List[str], weight: float = 1.0, case_sensitive: bool = False):
-        super().__init__(weight=weight)
+    def __init__(self, keywords: List[str], weight: float = 1.0, case_sensitive: bool = False, logger: Optional[logging.Logger] = None):
+        super().__init__(weight=weight, logger=logger)
         self._case_sensitive = case_sensitive
         # Pre-process keywords once
         self._keywords = [k if case_sensitive else k.lower() for k in keywords]
@@ -191,8 +234,8 @@ class KeywordRelevanceScorer(URLScorer):
 class FuzzyKeywordRelevanceScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_keywords', '_case_sensitive')
     
-    def __init__(self, keywords: List[str], weight: float = 1.0, case_sensitive: bool = False):
-        super().__init__(weight=weight)
+    def __init__(self, keywords: List[str], weight: float = 1.0, case_sensitive: bool = False, logger: Optional[logging.Logger] = None):
+        super().__init__(weight=weight, logger=logger)
         self._case_sensitive = case_sensitive
         self._keywords = [k if case_sensitive else k.lower() for k in keywords]
 
@@ -203,36 +246,36 @@ class FuzzyKeywordRelevanceScorer(URLScorer):
     
     def _tokenize_url(self, url: str) -> List[str]:
         url = url if self._case_sensitive else url.lower()
-        return re.findall(r"[a-z0-9]+", url)
+        return re.findall(r"[a-z0-9äöüß]+", url)
 
     def _calculate_score(self, url: str) -> float:
-        """Calculate fuzzy keyword relevance score for URL."""
+        """Return 1.0 if any keyword matches any token with high similarity."""
         if not self._case_sensitive:
             url = url.lower()
-            
-        matches = sum(1 for k in self._keywords if fuzz.ratio(k, url) > 80)
         
-        if not matches:
-            url_tokens = self._tokenize_url(url)
-            joined = " ".join(url_tokens)
-            scores = [
-                max(
-                    fuzz.partial_ratio(k, joined),
-                    fuzz.token_set_ratio(k, joined)
-                ) / 100.0
-                for k in self._keywords
-            ]
-            if not scores:
-                return 0.0
-            return sum(scores) / len(scores)
+        # Quick exact-like fuzzy match on whole URL
+        if any(fuzz.ratio(k, url) > 80 for k in self._keywords):
+            return 1.0
         
-        return 1.0
+        # Tokenize
+        url_tokens = self._tokenize_url(url)
+        if not url_tokens:
+            return 0.0
+        
+        # Check if any keyword is similar to any token
+        for k in self._keywords:
+            for token in url_tokens:
+                if fuzz.token_set_ratio(k, token) > 85:
+                    return 1.0  # High match → success
+        
+        # If no strong match found
+        return 0.0
 
 class PathDepthScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_optimal_depth')  # Remove _url_cache
     
-    def __init__(self, optimal_depth: int = 3, weight: float = 1.0):
-        super().__init__(weight=weight)
+    def __init__(self, optimal_depth: int = 3, weight: float = 1.0, logger: Optional[logging.Logger] = None):
+        super().__init__(weight=weight, logger=logger)
         self._optimal_depth = optimal_depth
 
     @staticmethod
@@ -288,14 +331,14 @@ class PathDepthScorer(URLScorer):
 class ContentTypeScorer(URLScorer):
     __slots__ = ('_weight', '_exact_types', '_regex_types')
 
-    def __init__(self, type_weights: Dict[str, float], weight: float = 1.0):
+    def __init__(self, type_weights: Dict[str, float], weight: float = 1.0, logger: Optional[logging.Logger] = None):
         """Initialize scorer with type weights map.
         
         Args:
             type_weights: Dict mapping file extensions/patterns to scores (e.g. {'.html$': 1.0})
             weight: Overall weight multiplier for this scorer
         """
-        super().__init__(weight=weight)
+        super().__init__(weight=weight, logger=logger)
         self._exact_types = {}  # Fast lookup for simple extensions
         self._regex_types = []  # Fallback for complex patterns
         
@@ -373,7 +416,7 @@ class ContentTypeScorer(URLScorer):
 class FreshnessScorer(URLScorer):
     __slots__ = ('_weight', '_date_pattern', '_current_year')
 
-    def __init__(self, weight: float = 1.0, current_year: int = 2024):
+    def __init__(self, weight: float = 1.0, current_year: int = 2024, logger: Optional[logging.Logger] = None):
         """Initialize freshness scorer.
         
         Extracts and scores dates from URLs using format:
@@ -386,7 +429,7 @@ class FreshnessScorer(URLScorer):
             weight: Score multiplier
             current_year: Year to calculate freshness against (default 2024)
         """
-        super().__init__(weight=weight)
+        super().__init__(weight=weight, logger=logger)
         self._current_year = current_year
         
         # Combined pattern for all date formats
@@ -560,26 +603,213 @@ class DomainAuthorityScorer(URLScorer):
         return self._domain_weights.get(domain, self._default_weight)
 
 class EmbeddingScorer(URLScorer):
-    __slots__ = ('_weight', '_stats', '_meta_by_url', '_reference_embeddings', '_embedding_model', '_embedding_llm_config')
+    __slots__ = (
+        '_weight', '_stats',
+        '_reference_embedding', '_reference_source',
+        '_embedding_model', '_embedding_llm_config'
+    )
 
-    def __init__(self, embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2", embedding_llm_config: Dict = None, reference_embeddings = None, weight: float = 1.0):
-        super().__init__(weight=weight)
+    def __init__(
+        self,
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        embedding_llm_config: Optional[Dict] = None,
+        reference: Optional[Any] = None,
+        weight: float = 1.0,
+        logger: Optional[logging.Logger] = None
+    ):
+        """Embedding-based URL scorer using page head metadata when available.
+
+        Args:
+            embedding_model: SentenceTransformers model name (when llm_config is None)
+            embedding_llm_config: Config for API-based embeddings (see get_text_embeddings)
+            reference: Reference text(s) or precomputed embedding vector to compare against
+            weight: Weight multiplier for this scorer
+        """
+        super().__init__(weight=weight, logger=logger)
         self._embedding_model = embedding_model
         self._embedding_llm_config = embedding_llm_config
-        self._reference_embeddings = reference_embeddings
-        self._meta_by_url: Dict[str, Dict[str, Any]] = {}
-    
-    def ingest_meta(self, url: str, head_data: Dict[str, Any]) -> None:
-        if url and head_data:
-            self._meta_by_url[url] = head_data
-        
-    def _calculate_score(self, url: str) -> float:
-        """Calculate embedding score for URL."""
-        meta = self._meta_by_url.get(url, {})
-        # TODO: use meta to calculate score
-        
+        self._reference_embedding = None 
+        self._reference_source = reference
+
+    async def _ensure_reference_embedding(self, reference: Any) -> Optional[np.ndarray]:
+        """Ensure we have a single reference embedding vector, computing it if needed."""
+        # If already a numpy vector
+        if isinstance(reference, np.ndarray):
+            return reference
+        # If list of texts or single text
+        if isinstance(reference, (str, list, tuple)):
+            texts = [reference] if isinstance(reference, str) else list(reference)
+            vectors = await get_text_embeddings(
+                texts=texts,
+                llm_config=self._embedding_llm_config,
+                model_name=self._embedding_model,
+                batch_size=32
+            )
+            if vectors.size == 0:
+                return None
+            # If multiple texts provided, average them
+            if len(texts) > 1:
+                return np.mean(vectors, axis=0)
+            return vectors[0]
+        # Unknown format
+        return None
+
+    # # TODO: remove static and add self
+    # @staticmethod
+    async def _assemble_page_signature(self, url: str) -> str:
+        """Build a compact textual signature from head metadata and title.
+        Falls back to the URL if metadata isn't available.
+        """
+        try:
+            head_content = await HeadPeekr.peek_html(url)
+
+            if not head_content:
+                return url
+
+            title = HeadPeekr.get_title(head_content) or ""
+            meta = HeadPeekr.extract_meta_tags(head_content) or {}
+
+            description = meta.get("description", "")
+            keywords = meta.get("keywords", "")
+            og_title = meta.get("og:title", "")
+            og_description = meta.get("og:description", "")
+
+            if keywords:
+                return keywords
+            if description:
+                if title:
+                    return " ".join([title, description])
+                else:
+                    return description
+            if og_title and not title:
+                if og_description:
+                    return " ".join([og_title, og_description])
+                else:
+                    return og_title
+            else:
+                return " ".join(re.findall(r"[a-z0-9äöüß]+", urlparse(url).path.lower()))
+
+        except Exception:
+            return url
+
+    async def _calculate_score(self, url: str) -> float:
+        """Calculate similarity between page metadata embedding and reference embedding."""
+        # Ensure reference embedding exists
+        if self._reference_embedding is None and self._reference_source is not None:
+            self._reference_embedding = await self._ensure_reference_embedding(self._reference_source)
+
+        if self._reference_embedding is None:
+            return 0.0
+
+        text = await self._assemble_page_signature(url)
+        vectors = await get_text_embeddings(
+            texts=[text],
+            llm_config=self._embedding_llm_config,
+            model_name=self._embedding_model,
+            batch_size=8
+        )
+        if vectors.size == 0:
+            return 0.0
+        url_vec = vectors[0]
+        return cosine_similarity(url_vec, self._reference_embedding)
+
+class EmbeddingKeywordScorer(URLScorer):
+    __slots__ = (
+        '_weight', '_stats',
+        '_reference_embeddings', '_keywords',
+        '_embedding_model', '_embedding_llm_config'
+    )
+
+    def __init__(
+        self,
+        embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        embedding_llm_config: Optional[Dict] = None,
+        keywords: Optional[List[str]] = None,
+        weight: float = 1.0,
+        logger: Optional[logging.Logger] = None
+    ):
+        """Embedding-based URL scorer using page head metadata when available.
+
+        Args:
+            embedding_model: SentenceTransformers model name (when llm_config is None)
+            embedding_llm_config: Config for API-based embeddings (see get_text_embeddings)
+            keywords: Keywords to compare against
+            weight: Weight multiplier for this scorer
+        """
+        super().__init__(weight=weight, logger=logger)
+        self._embedding_model = embedding_model
+        self._embedding_llm_config = embedding_llm_config
+        self._reference_embeddings = None 
+        self._keywords = [k.lower() for k in keywords]
+
+    async def _ensure_keywords_embeddings(self, keywords: List[str]) -> Optional[np.ndarray]:
+        """Ensure we have a single reference embedding vector, computing it if needed."""
+        vectors = await get_text_embeddings(
+            texts=keywords,
+            llm_config=self._embedding_llm_config,
+            model_name=self._embedding_model,
+            batch_size=32
+        )
+        return vectors
+
+    async def _assemble_page_signature(self, url: str) -> str:
+        """Build a compact textual signature from head metadata and title.
+        Falls back to the URL if metadata isn't available.
+        """
+        try:
+            head_content = await HeadPeekr.peek_html(url)
+
+            if not head_content:
+                return " ".join(re.findall(r"[a-z0-9äöüß]+", urlparse(url).path.lower()))
+
+            title = HeadPeekr.get_title(head_content) or ""
+            meta = HeadPeekr.extract_meta_tags(head_content) or {}
+
+            description = meta.get("description", "")
+            keywords = meta.get("keywords", "")
+            og_title = meta.get("og:title", "")
+            og_description = meta.get("og:description", "")
+
+            if keywords:
+                return keywords
+            # if description:
+            #     if title:
+            #         return " ".join([title, description])
+            #     else:
+            #         return description
+            # if og_title and not title:
+            #     if og_description:
+            #         return " ".join([og_title, og_description])
+            #     else:
+            #         return og_title
+            else:
+                return " ".join(re.findall(r"[a-z0-9äöüß]+", urlparse(url).path.lower()))
+
+        except Exception:
+            return " ".join(re.findall(r"[a-z0-9äöüß]+", urlparse(url).path.lower()))
+
+    async def _calculate_score(self, url: str) -> float:
+        """Calculate maximum similarity between page metadata embedding and reference embeddings."""
+        # Ensure reference embedding exists
+        if self._reference_embeddings is None and self._keywords is not None:
+            self._reference_embeddings = await self._ensure_keywords_embeddings(self._keywords)
+
         if self._reference_embeddings is None:
             return 0.0
-        
-        url_embedding = self._embedding_model.encode(url)
-        return np.dot(url_embedding, self._reference_embeddings) / (np.linalg.norm(url_embedding) * np.linalg.norm(self._reference_embeddings))
+
+        text = await self._assemble_page_signature(url)
+        vectors = await get_text_embeddings(
+            texts=[text],
+            llm_config=self._embedding_llm_config,
+            model_name=self._embedding_model,
+            batch_size=8
+        )
+        if vectors.size == 0:
+            return 0.0
+        url_vec = vectors[0]
+        similarities = []
+        print("URL: ", url, " with text: ", text)
+        for k_vec in self._reference_embeddings:
+            similarities.append(cosine_similarity(url_vec, k_vec))
+        print("max similarity:", max(similarities))
+        return max(cosine_similarity(url_vec, k_vec) for k_vec in self._reference_embeddings)

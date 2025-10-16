@@ -76,6 +76,8 @@ FilterStats = Union['FilterStatsType']
 SEOFilter = Union['SEOFilterType']
 KeywordRelevanceScorer = Union['KeywordRelevanceScorerType']
 FuzzyKeywordRelevanceScorer = Union['FuzzyKeywordRelevanceScorerType']
+EmbeddingScorer = Union['EmbeddingScorerType']
+EmbeddingKeywordScorer = Union['EmbeddingKeywordScorerType']
 URLScorer = Union['URLScorerType']
 CompositeScorer = Union['CompositeScorerType']
 DomainAuthorityScorer = Union['DomainAuthorityScorerType']
@@ -183,6 +185,8 @@ if TYPE_CHECKING:
         SEOFilter as SEOFilterType,
         KeywordRelevanceScorer as KeywordRelevanceScorerType,
         FuzzyKeywordRelevanceScorer as FuzzyKeywordRelevanceScorerType,
+        EmbeddingScorer as EmbeddingScorerType,
+        EmbeddingKeywordScorer as EmbeddingKeywordScorerType,
         URLScorer as URLScorerType,
         CompositeScorer as CompositeScorerType,
         DomainAuthorityScorer as DomainAuthorityScorerType,

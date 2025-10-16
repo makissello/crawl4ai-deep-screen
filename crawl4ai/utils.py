@@ -3375,7 +3375,7 @@ async def get_text_embeddings(
             get_text_embeddings._models = {}
         
         if model_name not in get_text_embeddings._models:
-            get_text_embeddings._models[model_name] = SentenceTransformer(model_name)
+            get_text_embeddings._models[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
         
         encoder = get_text_embeddings._models[model_name]
         

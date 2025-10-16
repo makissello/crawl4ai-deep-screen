@@ -55,7 +55,6 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self.stats = TraversalStats(start_time=datetime.now())
         self._cancel_event = asyncio.Event()
         self._pages_crawled = 0
-        self._link_metadata: Dict[str, dict] = {}
 
     def _append_discovered_url(self, base_url: str, depth: int) -> None:
         """
@@ -119,6 +118,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         # TODO: we want to filter for depth 0 too
         ###if depth != 0 and not await self.filter_chain.apply(url):
         if not await self.filter_chain.apply(url):
+            self.logger.debug(f"Skipping {url} due to filter chain")
             return False
 
         return True
@@ -156,8 +156,6 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         valid_links = []
         for link in links:
             url = link.get("href")
-            meta = link.get("head_data") or {}
-            self._link_metadata[url] = meta
             base_url = normalize_url_for_deep_crawl(url, source_url)
             if base_url in visited:
                 continue
@@ -211,9 +209,6 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         valid_links = []
         for link in links:
             url = link.get("href")
-            meta = link.get("head_data") or {}
-            self._link_metadata[url] = meta
-
             base_url = normalize_url_for_deep_crawl(url, source_url)
             if base_url in visited:
                 continue
@@ -320,6 +315,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         await queue.put((0, 0, start_url, None))  # initial URL (score=0)
         visited: Set[str] = set()
         depths: Dict[str, int] = {start_url: 0}
+        enqueued: Set[str] = {start_url}
 
         while not queue.empty() and not self._cancel_event.is_set():
             if self._pages_crawled >= self.max_pages:
@@ -328,9 +324,9 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
 
             # Log the current queue contents before popping
             queue_items = list(queue._queue)  # _queue is a deque storing internal items
-            self.logger.debug("Queue contents before batch:")
+            self.logger.info("Queue contents before batch:")
             for qscore, qdepth, qurl, qparent in queue_items:
-                self.logger.debug(f"  URL: {qurl}, Score: {-qscore}, Depth: {qdepth}, Parent: {qparent}")
+                self.logger.info(f"  URL: {qurl}, Score: {-qscore}, Depth: {qdepth}, Parent: {qparent}")
 
             remaining = self.max_pages - self._pages_crawled
             batch_size = min(self.batch_size, remaining)
@@ -389,15 +385,12 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
 
                     for new_url, new_parent in new_links:
                         new_depth = depths.get(new_url, depth + 1)
-                        new_meta = self._link_metadata.get(new_url, {})
-                        # TODO: use meta to calculate score
-                        ###new_score = self.url_scorer.score_with_meta(new_url, new_meta) if self.url_scorer else 0
-                        new_score = self.url_scorer.score(new_url) if self.url_scorer else 0
+                        new_score = await self.url_scorer.ascore(new_url) if self.url_scorer else 0
 
                         # negative for max-heap behavior (higher scores first)
-                        if new_url not in visited:
-
+                        if new_url not in visited and new_url not in enqueued:
                             await queue.put((-new_score, new_depth, new_url, new_parent))
+                            enqueued.add(new_url)
 
-                         # Log newly added URLs
-                        self.logger.debug(f"Added to queue: {new_url}, Score: {new_score}, Depth: {new_depth}, Parent: {new_parent}")
+                        #  # Log newly added URLs
+                        # self.logger.debug(f"Added to queue: {new_url}, Score: {new_score}, Depth: {new_depth}, Parent: {new_parent}")

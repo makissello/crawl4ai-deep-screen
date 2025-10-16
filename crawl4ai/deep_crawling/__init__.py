@@ -11,6 +11,7 @@ from .filters import (
     DomainFilterWithoutSubdomains,
     URLFilter,
     URLPatternFilter,
+    URLPatternFilterCaseInsensitive,
     FilterStats,
     ContentRelevanceFilter,
     SEOFilter
@@ -18,12 +19,14 @@ from .filters import (
 from .scorers import (
     KeywordRelevanceScorer,
     FuzzyKeywordRelevanceScorer,
+    PathDepthScorer,
     URLScorer,
     CompositeScorer,
     DomainAuthorityScorer,
     FreshnessScorer,
-    PathDepthScorer,
-    ContentTypeScorer
+    ContentTypeScorer,
+    EmbeddingScorer,
+    EmbeddingKeywordScorer,
 )
 
 __all__ = [
@@ -39,11 +42,14 @@ __all__ = [
     "DomainFilterWithoutSubdomains",
     "URLFilter",
     "URLPatternFilter",
+    "URLPatternFilterCaseInsensitive",
     "FilterStats",
     "ContentRelevanceFilter",
     "SEOFilter",
     "KeywordRelevanceScorer",
     "FuzzyKeywordRelevanceScorer",
+    "EmbeddingScorer",
+    "EmbeddingKeywordScorer",
     "URLScorer",
     "CompositeScorer",
     "DomainAuthorityScorer",

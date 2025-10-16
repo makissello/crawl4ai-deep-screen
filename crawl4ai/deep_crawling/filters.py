@@ -209,8 +209,15 @@ class URLPatternFilter(URLFilter):
     @lru_cache(maxsize=10000)
     def apply(self, url: str) -> bool:
         # Quick suffix check (*.html)
+        # Decode percent-encoded characters to allow patterns like "*über*"
+        try:
+            from urllib.parse import unquote
+            decoded_url = unquote(url)
+        except Exception:
+            decoded_url = url
+
         if self._simple_suffixes:
-            path = url.split("?")[0]
+            path = decoded_url.split("?")[0]
             if path.split("/")[-1].split(".")[-1] in self._simple_suffixes:
                 result = True
                 self._update_stats(result)
@@ -219,14 +226,14 @@ class URLPatternFilter(URLFilter):
         # Domain check
         if self._domain_patterns:
             for pattern in self._domain_patterns:
-                if pattern.match(url):
+                if pattern.match(decoded_url):
                     result = True
                     self._update_stats(result)
                     return not result if self._reverse else result
 
         # Prefix check (/foo/*)
         if self._simple_prefixes:
-            path = url.split("?")[0]
+            path = decoded_url.split("?")[0]
             # if any(path.startswith(p) for p in self._simple_prefixes):
             #     result = True
             #     self._update_stats(result)
@@ -245,7 +252,154 @@ class URLPatternFilter(URLFilter):
 
         # Complex patterns
         if self._path_patterns:
-            if any(p.search(url) for p in self._path_patterns):
+            if any(p.search(decoded_url) for p in self._path_patterns):
+                result = True
+                self._update_stats(result)
+                return not result if self._reverse else result
+
+        result = False
+        self._update_stats(result)
+        return not result if self._reverse else result
+
+
+class URLPatternFilterCaseInsensitive(URLFilter):
+    """Pattern filter balancing speed and completeness"""
+
+    __slots__ = (
+        "_simple_suffixes",
+        "_simple_prefixes",
+        "_domain_patterns",
+        "_path_patterns",
+        "_reverse",
+    )
+
+    PATTERN_TYPES = {
+        "SUFFIX": 1,  # *.html
+        "PREFIX": 2,  # /foo/*
+        "DOMAIN": 3,  # *.example.com
+        "PATH": 4,  # Everything else
+        "REGEX": 5,
+    }
+
+    def __init__(
+        self,
+        patterns: Union[str, Pattern, List[Union[str, Pattern]]],
+        use_glob: bool = True,
+        reverse: bool = False,
+    ):
+        super().__init__()
+        self._reverse = reverse
+        patterns = [patterns] if isinstance(patterns, (str, Pattern)) else patterns
+
+        self._simple_suffixes = set()
+        self._simple_prefixes = set()
+        self._domain_patterns = []
+        self._path_patterns = []
+
+        for pattern in patterns:
+            pattern_type = self._categorize_pattern(pattern)
+            self._add_pattern(pattern, pattern_type)
+
+    def _categorize_pattern(self, pattern: str) -> int:
+        """Categorize pattern for specialized handling"""
+        if not isinstance(pattern, str):
+            return self.PATTERN_TYPES["PATH"]
+
+        # Check if it's a regex pattern
+        if pattern.startswith("^") or pattern.endswith("$") or "\\d" in pattern:
+            return self.PATTERN_TYPES["REGEX"]
+
+        if pattern.count("*") == 1:
+            if pattern.startswith("*."):
+                return self.PATTERN_TYPES["SUFFIX"]
+            if pattern.endswith("/*"):
+                return self.PATTERN_TYPES["PREFIX"]
+
+        if "://" in pattern and pattern.startswith("*."):
+            return self.PATTERN_TYPES["DOMAIN"]
+
+        return self.PATTERN_TYPES["PATH"]
+
+    def _add_pattern(self, pattern: str, pattern_type: int):
+        """Add pattern to appropriate matcher"""
+        if pattern_type == self.PATTERN_TYPES["REGEX"]:
+            # For regex patterns, compile directly without glob translation
+            if isinstance(pattern, str) and (
+                pattern.startswith("^") or pattern.endswith("$") or "\\d" in pattern
+            ):
+                self._path_patterns.append(re.compile(pattern))
+                return
+        elif pattern_type == self.PATTERN_TYPES["SUFFIX"]:
+            self._simple_suffixes.add(pattern[2:])
+        elif pattern_type == self.PATTERN_TYPES["PREFIX"]:
+            self._simple_prefixes.add(pattern[:-2])
+        elif pattern_type == self.PATTERN_TYPES["DOMAIN"]:
+            self._domain_patterns.append(re.compile(pattern.replace("*.", r"[^/]+\.")))
+        else:
+            if isinstance(pattern, str):
+                # Handle complex glob patterns
+                if "**" in pattern:
+                    pattern = pattern.replace("**", ".*")
+                if "{" in pattern:
+                    # Convert {a,b} to (a|b)
+                    pattern = re.sub(
+                        r"\{([^}]+)\}",
+                        lambda m: f'({"|".join(m.group(1).split(","))})',
+                        pattern,
+                    )
+                pattern = fnmatch.translate(pattern)
+            self._path_patterns.append(
+                pattern if isinstance(pattern, Pattern) else re.compile(pattern)
+            )
+
+    @lru_cache(maxsize=10000)
+    def apply(self, url: str) -> bool:
+        # Quick suffix check (*.html)
+        url = url.lower()
+        # Decode percent-encoded characters to allow patterns like "*über*"
+        try:
+            from urllib.parse import unquote
+            decoded_url = unquote(url)
+        except Exception:
+            decoded_url = url
+
+        if self._simple_suffixes:
+            path = decoded_url.split("?")[0]
+            if path.split("/")[-1].split(".")[-1] in self._simple_suffixes:
+                result = True
+                self._update_stats(result)
+                return not result if self._reverse else result
+
+        # Domain check
+        if self._domain_patterns:
+            for pattern in self._domain_patterns:
+                if pattern.match(decoded_url):
+                    result = True
+                    self._update_stats(result)
+                    return not result if self._reverse else result
+
+        # Prefix check (/foo/*)
+        if self._simple_prefixes:
+            path = decoded_url.split("?")[0]
+            # if any(path.startswith(p) for p in self._simple_prefixes):
+            #     result = True
+            #     self._update_stats(result)
+            #     return not result if self._reverse else result
+            ####
+            # Modified the prefix matching logic to ensure path boundary checking:
+            # - Check if the matched prefix is followed by a path separator (`/`), query parameter (`?`), fragment (`#`), or is at the end of the path
+            # - This ensures `/api/` only matches complete path segments, not substrings like `/apiv2/`
+            ####
+            for prefix in self._simple_prefixes:
+                if path.startswith(prefix):
+                    if len(path) == len(prefix) or path[len(prefix)] in ['/', '?', '#']:
+                        result = True
+                        self._update_stats(result)
+                        return not result if self._reverse else result
+
+        # Complex patterns
+        if self._path_patterns:
+            if any(p.search(decoded_url) for p in self._path_patterns):
                 result = True
                 self._update_stats(result)
                 return not result if self._reverse else result
@@ -497,6 +651,7 @@ class DomainFilter(URLFilter):
         self._update_stats(False)
         return False
 
+
 class DomainFilterWithoutSubdomains(URLFilter):
     """Optimized domain filter with fast lookups and caching"""
 
@@ -577,7 +732,7 @@ class DomainFilterWithoutSubdomains(URLFilter):
         # No matches found
         self._update_stats(False)
         return False
-        
+
 
 class ContentRelevanceFilter(URLFilter):
     """BM25-based relevance filter using head section content"""

@@ -352,6 +352,12 @@ class CosineStrategy(ExtractionStrategy):
 
         self.timer = time.time()
         embeddings = self.get_embeddings(sentences, bypass_buffer=True)
+        # Guard: if there are fewer than 2 embeddings, clustering cannot proceed.
+        # Return a single cluster for all items (or empty if no sentences).
+        if embeddings is None or len(embeddings) == 0:
+            return np.array([], dtype=int)
+        if len(embeddings) == 1:
+            return np.array([1], dtype=int)
         # print(f"[LOG] 🚀 Embeddings computed in {time.time() - self.timer:.2f} seconds")
         # Compute pairwise cosine distances
         distance_matrix = pdist(embeddings, "cosine")
@@ -1125,25 +1131,25 @@ class JsonElementExtractionStrategy(ExtractionStrategy):
             "role": "system", 
             "content": f"""You specialize in generating special JSON schemas for web scraping. This schema uses CSS or XPATH selectors to present a repetitive pattern in crawled HTML, such as a product in a product list or a search result item in a list of search results. We use this JSON schema to pass to a language model along with the HTML content to extract structured data from the HTML. The language model uses the JSON schema to extract data from the HTML and retrieve values for fields in the JSON schema, following the schema.
 
-Generating this HTML manually is not feasible, so you need to generate the JSON schema using the HTML content. The HTML copied from the crawled website is provided below, which we believe contains the repetitive pattern.
+            Generating this HTML manually is not feasible, so you need to generate the JSON schema using the HTML content. The HTML copied from the crawled website is provided below, which we believe contains the repetitive pattern.
 
-# Schema main keys:
-- name: This is the name of the schema.
-- baseSelector: This is the CSS or XPATH selector that identifies the base element that contains all the repetitive patterns.
-- baseFields: This is a list of fields that you extract from the base element itself.
-- fields: This is a list of fields that you extract from the children of the base element. {{name, selector, type}} based on the type, you may have extra keys such as "attribute" when the type is "attribute".
+            # Schema main keys:
+            - name: This is the name of the schema.
+            - baseSelector: This is the CSS or XPATH selector that identifies the base element that contains all the repetitive patterns.
+            - baseFields: This is a list of fields that you extract from the base element itself.
+            - fields: This is a list of fields that you extract from the children of the base element. {{name, selector, type}} based on the type, you may have extra keys such as "attribute" when the type is "attribute".
 
-# Extra Context:
-In this context, the following items may or may not be present:
-- Example of target JSON object: This is a sample of the final JSON object that we hope to extract from the HTML using the schema you are generating.
-- Extra Instructions: This is optional instructions to consider when generating the schema provided by the user.
-- Query or explanation of target/goal data item: This is a description of what data we are trying to extract from the HTML. This explanation means we're not sure about the rigid schema of the structures we want, so we leave it to you to use your expertise to create the best and most comprehensive structures aimed at maximizing data extraction from this page. You must ensure that you do not pick up nuances that may exist on a particular page. The focus should be on the data we are extracting, and it must be valid, safe, and robust based on the given HTML.
+            # Extra Context:
+            In this context, the following items may or may not be present:
+            - Example of target JSON object: This is a sample of the final JSON object that we hope to extract from the HTML using the schema you are generating.
+            - Extra Instructions: This is optional instructions to consider when generating the schema provided by the user.
+            - Query or explanation of target/goal data item: This is a description of what data we are trying to extract from the HTML. This explanation means we're not sure about the rigid schema of the structures we want, so we leave it to you to use your expertise to create the best and most comprehensive structures aimed at maximizing data extraction from this page. You must ensure that you do not pick up nuances that may exist on a particular page. The focus should be on the data we are extracting, and it must be valid, safe, and robust based on the given HTML.
 
-# What if there is no example of target JSON object and also no extra instructions or even no explanation of target/goal data item?
-In this scenario, use your best judgment to generate the schema. You need to examine the content of the page and understand the data it provides. If the page contains repetitive data, such as lists of items, products, jobs, places, books, or movies, focus on one single item that repeats. If the page is a detailed page about one product or item, create a schema to extract the entire structured data. At this stage, you must think and decide for yourself. Try to maximize the number of fields that you can extract from the HTML.
+            # What if there is no example of target JSON object and also no extra instructions or even no explanation of target/goal data item?
+            In this scenario, use your best judgment to generate the schema. You need to examine the content of the page and understand the data it provides. If the page contains repetitive data, such as lists of items, products, jobs, places, books, or movies, focus on one single item that repeats. If the page is a detailed page about one product or item, create a schema to extract the entire structured data. At this stage, you must think and decide for yourself. Try to maximize the number of fields that you can extract from the HTML.
 
-# What are the instructions and details for this schema generation?
-{prompt_template}"""
+            # What are the instructions and details for this schema generation?
+            {prompt_template}"""
         }
         
         user_message = {
