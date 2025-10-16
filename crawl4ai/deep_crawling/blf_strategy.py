@@ -285,6 +285,15 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         """
         if config is None:
             raise ValueError("CrawlerRunConfig must be provided")
+
+        # TODO TEST
+        # Reset per-run state so that max_pages applies per start_url
+        self._pages_crawled = 0
+        self._cancel_event = asyncio.Event()
+        self.stats = TraversalStats(start_time=datetime.now())
+
+    
+
         if config.stream:
             return self._arun_stream(start_url, crawler, config)
         else:
