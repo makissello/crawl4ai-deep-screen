@@ -175,10 +175,6 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
             depths[url] = new_depth
             next_links.append((url, source_url))
 
-            try:
-                self._append_discovered_url(url, new_depth)
-            except Exception as e:
-                self.logger.warning(f"Failed to log discovered URL {url}: {e}")
 
     async def link_discovery_with_depth(
         self,
@@ -236,10 +232,6 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         for url in valid_links:
             next_links.append((url, source_url))
 
-            try:
-                self._append_discovered_url(url, link_depth)
-            except Exception as e:
-                self.logger.warning(f"Failed to log discovered URL {url}: {e}")
 
     async def _arun_batch(
         self,
@@ -379,14 +371,24 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
 
                 if result.success:
                     self._pages_crawled += 1
+
+                # Always yield the result we just processed
+                yield result
+                self.logger.debug(f"After processing {url}, queue size: {queue.qsize()}")
+
+                if result.success:
+                    # Log only URLs that actually got processed successfully
+                    try:
+                        self._append_discovered_url(result_url, depth)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to log processed URL {result_url}: {e}")
+
+                    # If we hit the page limit after yielding/logging, stop further work
                     if self._pages_crawled >= self.max_pages:
                         self.logger.info(
                             f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl"
                         )
                         break
-
-                yield result
-                self.logger.debug(f"After processing {url}, queue size: {queue.qsize()}")
 
                 if result.success:
                     new_links: List[Tuple[str, Optional[str]]] = []
@@ -400,6 +402,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                         if new_url not in visited and new_url not in enqueued:
                             await queue.put((-new_score, new_depth, new_url, new_parent))
                             enqueued.add(new_url)
+                            self.logger.info(f'Enqueued link: {new_url}.')
 
                         #  # Log newly added URLs
                         # self.logger.debug(f"Added to queue: {new_url}, Score: {new_score}, Depth: {new_depth}, Parent: {new_parent}")
