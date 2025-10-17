@@ -43,6 +43,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         include_external: bool = False,
         max_pages: int = infinity,
         batch_size: int = BATCH_SIZE,
+        save_discovered_urls: bool = False,
         logger: Optional[logging.Logger] = None,
     ):
         self.max_depth = max_depth
@@ -51,6 +52,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self.include_external = include_external
         self.max_pages = max_pages
         self.batch_size = batch_size
+        self.save_discovered_urls = save_discovered_urls
         self.logger = logger or logging.getLogger(__name__)
         self.stats = TraversalStats(start_time=datetime.now())
         self._cancel_event = asyncio.Event()
@@ -378,10 +380,11 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
 
                 if result.success:
                     # Log only URLs that actually got processed successfully
-                    try:
-                        self._append_discovered_url(result_url, depth)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to log processed URL {result_url}: {e}")
+                    if self.save_discovered_urls:
+                        try:
+                            self._append_discovered_url(result_url, depth)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to log processed URL {result_url}: {e}")
 
                     # If we hit the page limit after yielding/logging, stop further work
                     if self._pages_crawled >= self.max_pages:
