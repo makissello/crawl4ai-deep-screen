@@ -271,6 +271,100 @@ class FuzzyKeywordRelevanceScorer(URLScorer):
         # If no strong match found
         return 0.0
 
+class WeightedFuzzyKeywordRelevanceScorer(URLScorer):
+    __slots__ = (
+        '_weight', '_stats', '_keyword_weights', '_total_keyword_weight',
+        '_case_sensitive', '_partial_penalty', '_fuzzy_penalty'
+    )
+
+    def __init__(
+        self,
+        keyword_weights: Dict[str, float],
+        weight: float = 1.0,
+        case_sensitive: bool = False,
+        partial_penalty: float = 0.1,
+        fuzzy_penalty: float = 0.15,
+        logger: Optional[logging.Logger] = None
+    ):
+        """Weighted fuzzy keyword relevance scorer.
+
+        Behaves like FuzzyKeywordRelevanceScorer but supports per-keyword weights and
+        applies a small penalty when the match is not an exact token match, e.g.,
+        "/produkte-alt" vs the exact keyword "produkte".
+        """
+        super().__init__(weight=weight, logger=logger)
+        self._case_sensitive = case_sensitive
+        # Normalize keywords according to case sensitivity
+        self._keyword_weights = {
+            (k if case_sensitive else k.lower()): float(w)
+            for k, w in (keyword_weights or {}).items()
+            if w is not None and float(w) > 0.0
+        }
+        self._total_keyword_weight = sum(self._keyword_weights.values()) or 1.0
+        self._partial_penalty = max(0.0, min(1.0, partial_penalty))
+        self._fuzzy_penalty = max(0.0, min(1.0, fuzzy_penalty))
+
+    @lru_cache(maxsize=10000)
+    def _tokenize_url(self, url: str) -> List[str]:
+        text = url if self._case_sensitive else url.lower()
+        # Keep hyphens as part of tokens so "produkte-alt" remains a single token
+        # This allows us to penalize partial matches like keyword "produkte" inside "produkte-alt".
+        return re.findall(r"[a-z0-9äöüß-]+", text)
+
+    @staticmethod
+    def _is_exact_token_match(keyword: str, token: str) -> bool:
+        return token == keyword
+
+    @staticmethod
+    def _is_subtoken_partial_match(keyword: str, token: str) -> bool:
+        """True if keyword appears as a sub-token inside token (e.g., "produkte" in "produkte-alt")."""
+        if token == keyword:
+            return False
+        # Consider hyphen/underscore separated subtokens as partial when containing keyword
+        # Also accept generic substring as partial (e.g., …/produktealt)
+        if keyword in token:
+            return True
+        return False
+
+    def _best_match_score_for_keyword(self, keyword: str, url_tokens: List[str], full_url: str) -> float:
+        # Quick whole-URL fuzzy boost similar to original logic
+        url_text = full_url if self._case_sensitive else full_url.lower()
+        if fuzz.ratio(keyword, url_text) > 80:
+            return 1.0
+
+        best = 0.0
+        for token in url_tokens:
+            if self._is_exact_token_match(keyword, token):
+                best = max(best, 1.0)
+                if best == 1.0:
+                    break
+            elif self._is_subtoken_partial_match(keyword, token):
+                # Partial token match gets a small penalty
+                best = max(best, max(0.0, 1.0 - self._partial_penalty))
+            else:
+                # Fuzzy similarity on token level
+                if fuzz.token_set_ratio(keyword, token) > 85:
+                    best = max(best, max(0.0, 1.0 - self._fuzzy_penalty))
+        return best
+
+    @lru_cache(maxsize=10000)
+    def _calculate_score(self, url: str) -> float:
+        if not self._keyword_weights:
+            return 0.0
+
+        url_tokens = self._tokenize_url(url)
+        if not url_tokens:
+            return 0.0
+
+        weighted_sum = 0.0
+        total_w = self._total_keyword_weight
+        for keyword, kw_weight in self._keyword_weights.items():
+            match_score = self._best_match_score_for_keyword(keyword, url_tokens, url)
+            weighted_sum += kw_weight * match_score
+
+        # Normalize to [0,1]
+        return weighted_sum / total_w if total_w > 0 else 0.0
+
 class PathDepthScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_optimal_depth')  # Remove _url_cache
     

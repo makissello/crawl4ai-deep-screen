@@ -20,6 +20,7 @@ from .filters import (
 from .scorers import (
     KeywordRelevanceScorer,
     FuzzyKeywordRelevanceScorer,
+    WeightedFuzzyKeywordRelevanceScorer,
     PathDepthScorer,
     URLScorer,
     CompositeScorer,
@@ -50,6 +51,7 @@ __all__ = [
     "SEOFilter",
     "KeywordRelevanceScorer",
     "FuzzyKeywordRelevanceScorer",
+    "WeightedFuzzyKeywordRelevanceScorer",
     "EmbeddingScorer",
     "EmbeddingKeywordScorer",
     "URLScorer",
