@@ -44,6 +44,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         max_pages: int = infinity,
         batch_size: int = BATCH_SIZE,
         save_discovered_urls: bool = False,
+        enforce_depth: bool = False, # Enable when using PathDepthFilter
         logger: Optional[logging.Logger] = None,
     ):
         self.max_depth = max_depth
@@ -53,6 +54,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self.max_pages = max_pages
         self.batch_size = batch_size
         self.save_discovered_urls = save_discovered_urls
+        self.enforce_depth = enforce_depth
         self.logger = logger or logging.getLogger(__name__)
         self.stats = TraversalStats(start_time=datetime.now())
         self._cancel_event = asyncio.Event()
@@ -99,6 +101,17 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
             return len(parts)
         except Exception:
             return 0
+
+    def _is_sitemap_url(self, url: str) -> bool:
+        """
+        Check if the URL is a sitemap URL (/sitemap or /sitemap.xml).
+        """
+        try:
+            parsed = urlparse(url)
+            path = parsed.path.strip("/").lower()
+            return path in ["sitemap", "sitemap.xml"]
+        except Exception:
+            return False
             
     async def can_process_url(self, url: str, depth: int) -> bool:
         """
@@ -167,12 +180,8 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 
             valid_links.append(base_url)
             
-        # If we have more valid links than capacity, limit them
-        if len(valid_links) > remaining_capacity:
-            valid_links = valid_links[:remaining_capacity]
-            self.logger.info(f"Limiting to {remaining_capacity} URLs due to max_pages limit")
-            
-        # Record the new depths and add to next_links
+        # Record the new depths and add to next_links (do not limit here; we will
+        # score and limit later in the main loop to keep the highest-scoring URLs)
         for url in valid_links:
             depths[url] = new_depth
             next_links.append((url, source_url))
@@ -212,7 +221,7 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 continue
 
             link_depth = self._path_depth(url)
-            if link_depth > self.max_depth:
+            if self.enforce_depth and link_depth > self.max_depth:
                 self.logger.debug(f"Skipping {url} (depth {link_depth} > max_depth {self.max_depth})")
                 self.stats.urls_skipped += 1
                 continue
@@ -225,12 +234,8 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
             valid_links.append(base_url)
             depths[base_url] = link_depth
             
-        # If we have more valid links than capacity, limit them
-        if len(valid_links) > remaining_capacity:
-            valid_links = valid_links[:remaining_capacity]
-            self.logger.info(f"Limiting to {remaining_capacity} URLs due to max_pages limit")
-            
-        # Record the new depths and add to next_links
+        # Record the new depths and add to next_links (do not limit here; we will
+        # score and limit later in the main loop to keep the highest-scoring URLs)
         for url in valid_links:
             next_links.append((url, source_url))
 
@@ -318,7 +323,8 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         await queue.put((0, 0, start_url, None))  # initial URL (score=0)
         visited: Set[str] = set()
         depths: Dict[str, int] = {start_url: 0}
-        enqueued: Set[str] = {start_url}
+        # Track best (highest) known score for each URL so we can update priorities
+        best_scores: Dict[str, float] = {start_url: 0.0}
 
         while not queue.empty() and not self._cancel_event.is_set():
             if self._pages_crawled >= self.max_pages:
@@ -342,11 +348,17 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 if queue.empty():
                     break
                 score, depth, url, parent_url = await queue.get()
+                # Discard stale queue entries whose score is not the current best
+                # (queue holds negative scores; convert to positive for comparison)
+                current_best = best_scores.get(url)
+                if current_best is not None and -score != current_best:
+                    continue
                 # skip URLs that are too deep
-                if depth > self.max_depth:
+
+                if self.enforce_depth and depth > self.max_depth:
                     self.logger.debug(f"Skipping {url} (depth {depth} > max_depth {self.max_depth})")
                     continue
-                # skip duplicates
+                # skip duplicates already processed
                 if url in visited:
                     continue
                 visited.add(url)
@@ -372,7 +384,12 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 result.metadata["score"] = -score  # store actual positive score
 
                 if result.success:
-                    self._pages_crawled += 1
+                    # Check if this is a sitemap URL - if so, increase max_pages by 1 and don't count it
+                    if self._is_sitemap_url(result_url):
+                        self.max_pages += 1
+                        self.logger.info(f"Sitemap URL detected: {result_url}. Increased max_pages to {self.max_pages}")
+                    else:
+                        self._pages_crawled += 1
 
                 # Always yield the result we just processed
                 yield result
@@ -397,15 +414,31 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                     new_links: List[Tuple[str, Optional[str]]] = []
                     await self.link_discovery_with_depth(result, result_url, depth, visited, new_links, depths)
 
-                    for new_url, new_parent in new_links:
-                        new_depth = depths.get(new_url, depth + 1)
-                        new_score = await self.url_scorer.ascore(new_url) if self.url_scorer else 0
+                    if new_links:
+                        # Score links first, then limit by remaining capacity keeping highest scores
+                        urls_to_score = [u for (u, _) in new_links if u not in visited]
+                        # Compute scores concurrently
+                        if self.url_scorer:
+                            scores = await asyncio.gather(*[self.url_scorer.ascore(u) for u in urls_to_score])
+                        else:
+                            scores = [0 for _ in urls_to_score]
 
-                        # negative for max-heap behavior (higher scores first)
-                        if new_url not in visited and new_url not in enqueued:
-                            await queue.put((-new_score, new_depth, new_url, new_parent))
-                            enqueued.add(new_url)
-                            self.logger.info(f'Enqueued link: {new_url}.')
+                        url_parent_map: Dict[str, Optional[str]] = {u: p for (u, p) in new_links}
+                        new_depths: Dict[str, int] = {u: depths.get(u, depth + 1) for u in urls_to_score}
 
-                        #  # Log newly added URLs
-                        # self.logger.debug(f"Added to queue: {new_url}, Score: {new_score}, Depth: {new_depth}, Parent: {new_parent}")
+                        scored_candidates: List[Tuple[float, str]] = list(zip(scores, urls_to_score))
+                        scored_candidates.sort(key=lambda t: t[0], reverse=True)
+
+                        remaining_capacity = self.max_pages - self._pages_crawled
+                        if remaining_capacity <= 0:
+                            continue
+                        top_k = scored_candidates[:remaining_capacity]
+
+                        for candidate_score, candidate_url in top_k:
+                            prev_best = best_scores.get(candidate_url)
+                            if prev_best is None or candidate_score > prev_best:
+                                best_scores[candidate_url] = candidate_score
+                                candidate_depth = new_depths.get(candidate_url, depth + 1)
+                                candidate_parent = url_parent_map.get(candidate_url)
+                                await queue.put((-candidate_score, candidate_depth, candidate_url, candidate_parent))
+                                self.logger.info(f'Enqueued/updated link: {candidate_url} with score {candidate_score}.')

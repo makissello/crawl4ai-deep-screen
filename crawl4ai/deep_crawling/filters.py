@@ -809,6 +809,75 @@ class ContentRelevanceFilter(URLFilter):
         return score
 
 
+class PathDepthFilter(URLFilter):
+    """Filter URLs based on path depth after the domain, with keyword bypass capability"""
+
+    __slots__ = ("max_depth", "bypass_keywords", "_keyword_patterns")
+
+    def __init__(
+        self,
+        max_depth: int,
+        bypass_keywords: List[str] = None,
+        name: str = None,
+    ):
+        super().__init__(name)
+        self.max_depth = max_depth
+        self.bypass_keywords = bypass_keywords or []
+        
+        # Pre-compile keyword patterns for fast matching
+        if self.bypass_keywords:
+            # Create regex patterns for case-insensitive keyword matching
+            escaped_keywords = [re.escape(keyword.lower()) for keyword in self.bypass_keywords]
+            pattern = r'\b(' + '|'.join(escaped_keywords) + r')\b'
+            self._keyword_patterns = re.compile(pattern, re.IGNORECASE)
+        else:
+            self._keyword_patterns = None
+
+    @staticmethod
+    @lru_cache(maxsize=10000)
+    def _path_depth(url: str) -> int:
+        """
+        Compute depth as the number of path segments after the domain.
+        Examples:
+        - https://example.com/         -> 0
+        - https://example.com/a        -> 1
+        - https://example.com/a/b      -> 2
+        - https://example.com/a/b/c    -> 3
+        """
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            # Remove leading/trailing slashes and filter empty segments
+            parts = [p for p in parsed.path.strip("/").split("/") if p]
+            return len(parts)
+        except Exception:
+            return 0
+
+    def _contains_bypass_keyword(self, url: str) -> bool:
+        """Check if URL contains any bypass keywords"""
+        if not self._keyword_patterns:
+            return False
+        
+        # Convert URL to lowercase for case-insensitive matching
+        url_lower = url.lower()
+        return bool(self._keyword_patterns.search(url_lower))
+
+    def apply(self, url: str) -> bool:
+        """Apply path depth filtering with keyword bypass"""
+        # Check if URL contains bypass keywords first
+        if self._contains_bypass_keyword(url):
+            self._update_stats(True)
+            return True
+        
+        # Calculate path depth
+        depth = self._path_depth(url)
+        
+        # Allow URLs within the depth limit
+        result = depth <= self.max_depth
+        self._update_stats(result)
+        return result
+
+
 class SEOFilter(URLFilter):
     """Quantitative SEO quality assessment filter using head section analysis"""
 

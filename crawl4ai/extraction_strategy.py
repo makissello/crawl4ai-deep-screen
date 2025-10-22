@@ -249,10 +249,17 @@ class CosineStrategy(ExtractionStrategy):
         from sklearn.metrics.pairwise import cosine_similarity
 
         # Compute embedding for the keyword filter
-        query_embedding = self.get_embeddings([semantic_filter])[0]
+        query_embeddings = self.get_embeddings([semantic_filter])
+        if len(query_embeddings) == 0:
+            return documents  # Return original documents if no valid query embedding
+        
+        query_embedding = query_embeddings[0]
 
         # Compute embeddings for the documents
         document_embeddings = self.get_embeddings(documents)
+        
+        if len(document_embeddings) == 0:
+            return documents  # Return original documents if no valid document embeddings
 
         # Calculate cosine similarity between the query embedding and document embeddings
         similarities = cosine_similarity(
@@ -293,6 +300,13 @@ class CosineStrategy(ExtractionStrategy):
         Returns:
             NumPy array of embeddings.
         """
+        # Filter out empty or very short sentences to avoid tokenization errors
+        filtered_sentences = [s.strip() for s in sentences if s and s.strip() and len(s.strip()) > 1]
+        
+        if not filtered_sentences:
+            # Return empty embeddings if no valid sentences
+            return np.array([])
+        
         # if self.buffer_embeddings.any() and not bypass_buffer:
         #     return self.buffer_embeddings
 
@@ -304,8 +318,8 @@ class CosineStrategy(ExtractionStrategy):
                 batch_size = self.default_batch_size
 
             all_embeddings = []
-            for i in range(0, len(sentences), batch_size):
-                batch_sentences = sentences[i : i + batch_size]
+            for i in range(0, len(filtered_sentences), batch_size):
+                batch_sentences = filtered_sentences[i : i + batch_size]
                 encoded_input = self.tokenizer(
                     batch_sentences, padding=True, truncation=True, return_tensors="pt"
                 )
@@ -328,8 +342,8 @@ class CosineStrategy(ExtractionStrategy):
                 batch_size = self.default_batch_size
 
             all_embeddings = []
-            for i in range(0, len(sentences), batch_size):
-                batch_sentences = sentences[i : i + batch_size]
+            for i in range(0, len(filtered_sentences), batch_size):
+                batch_sentences = filtered_sentences[i : i + batch_size]
                 embeddings = self.model(batch_sentences)
                 all_embeddings.append(embeddings)
 
@@ -406,6 +420,9 @@ class CosineStrategy(ExtractionStrategy):
         # Assume `html` is a list of text chunks for this strategy
         t = time.time()
         text_chunks = html.split(self.DEL)  # Split by lines or paragraphs as needed
+        
+        # Filter out empty or very short chunks
+        text_chunks = [chunk.strip() for chunk in text_chunks if chunk and chunk.strip() and len(chunk.strip()) > 3]
 
         # Pre-filter documents using embeddings and semantic_filter
         text_chunks = self.filter_documents_embeddings(

@@ -14,6 +14,7 @@ from .filters import (
     URLPatternFilterCaseInsensitive,
     FilterStats,
     ContentRelevanceFilter,
+    PathDepthFilter,
     SEOFilter
 )
 from .scorers import (
@@ -45,6 +46,7 @@ __all__ = [
     "URLPatternFilterCaseInsensitive",
     "FilterStats",
     "ContentRelevanceFilter",
+    "PathDepthFilter",
     "SEOFilter",
     "KeywordRelevanceScorer",
     "FuzzyKeywordRelevanceScorer",
