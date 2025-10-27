@@ -273,7 +273,7 @@ class FuzzyKeywordRelevanceScorer(URLScorer):
 
 class WeightedFuzzyKeywordRelevanceScorer(URLScorer):
     __slots__ = (
-        '_weight', '_stats', '_keyword_weights', '_total_keyword_weight',
+        '_weight', '_stats', '_keyword_weights',
         '_case_sensitive', '_partial_penalty', '_fuzzy_penalty'
     )
 
@@ -300,7 +300,6 @@ class WeightedFuzzyKeywordRelevanceScorer(URLScorer):
             for k, w in (keyword_weights or {}).items()
             if w is not None and float(w) > 0.0
         }
-        self._total_keyword_weight = sum(self._keyword_weights.values()) or 1.0
         self._partial_penalty = max(0.0, min(1.0, partial_penalty))
         self._fuzzy_penalty = max(0.0, min(1.0, fuzzy_penalty))
 
@@ -356,14 +355,15 @@ class WeightedFuzzyKeywordRelevanceScorer(URLScorer):
         if not url_tokens:
             return 0.0
 
-        weighted_sum = 0.0
-        total_w = self._total_keyword_weight
+        # Find the keyword with the best match score
+        best_weighted_score = 0.0
         for keyword, kw_weight in self._keyword_weights.items():
             match_score = self._best_match_score_for_keyword(keyword, url_tokens, url)
-            weighted_sum += kw_weight * match_score
+            # Use the best match score multiplied by its weight
+            weighted_score = match_score * kw_weight
+            best_weighted_score = max(best_weighted_score, weighted_score)
 
-        # Normalize to [0,1]
-        return weighted_sum / total_w if total_w > 0 else 0.0
+        return best_weighted_score
 
 class PathDepthScorer(URLScorer):
     __slots__ = ('_weight', '_stats', '_optimal_depth')  # Remove _url_cache
