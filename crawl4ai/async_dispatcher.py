@@ -17,6 +17,7 @@ import time
 import psutil
 import asyncio
 import uuid
+import inspect
 
 from urllib.parse import urlparse
 import random
@@ -323,20 +324,56 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
             end_memory = process.memory_info().rss / (1024 * 1024)
             memory_usage = peak_memory = end_memory - start_memory
             
-            # Handle rate limiting
-            if self.rate_limiter and result.status_code:
-                if not self.rate_limiter.update_delay(url, result.status_code):
-                    error_message = f"Rate limit retry count exceeded for domain {urlparse(url).netloc}"
+            # Handle async generator results (deep crawling with streaming)
+            if inspect.isasyncgen(result):
+                # For async generator results (e.g., deep crawling with streaming),
+                # we need to collect all results and use the last/first one as the main result
+                results_list = []
+                async for r in result:
+                    results_list.append(r)
+                    # For rate limiting, check the status code of each result
+                    if self.rate_limiter and hasattr(r, 'status_code') and r.status_code:
+                        if not self.rate_limiter.update_delay(url, r.status_code):
+                            error_message = f"Rate limit retry count exceeded for domain {urlparse(url).netloc}"
+                            if self.monitor:
+                                self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+                
+                # Use the last result (most recent deep crawl result) or create a summary
+                if results_list:
+                    result = results_list[-1]  # Use the most recent result
+                    # Update status based on the aggregated results
+                    all_successful = all(r.success for r in results_list)
+                    if not all_successful:
+                        error_message = "Some pages in deep crawl failed"
+                        if self.monitor:
+                            self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+                    elif self.monitor:
+                        self.monitor.update_task(task_id, status=CrawlStatus.COMPLETED)
+                else:
+                    # No results from async generator
+                    result = CrawlResult(
+                        url=url, html="", metadata={}, success=False, 
+                        error_message="No results from deep crawl"
+                    )
+                    error_message = "No results from deep crawl"
                     if self.monitor:
                         self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
-                        
-            # Update status based on result
-            if not result.success:
-                error_message = result.error_message
-                if self.monitor:
-                    self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
-            elif self.monitor:
-                self.monitor.update_task(task_id, status=CrawlStatus.COMPLETED)
+            else:
+                # Handle rate limiting for single result
+                if self.rate_limiter and hasattr(result, 'status_code') and result.status_code:
+                    if not self.rate_limiter.update_delay(url, result.status_code):
+                        error_message = f"Rate limit retry count exceeded for domain {urlparse(url).netloc}"
+                        if self.monitor:
+                            self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+                            
+                # Update status based on result
+                if not result.success:
+                    error_message = result.error_message if hasattr(result, 'error_message') else ""
+                    if self.monitor:
+                        self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+                elif self.monitor:
+                    self.monitor.update_task(task_id, status=CrawlStatus.COMPLETED)
+                
                 
         except Exception as e:
             error_message = str(e)
@@ -455,8 +492,6 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
                     
                 # Update priorities for waiting tasks if needed
                 await self._update_queue_priorities()
-                
-            return results
 
         except Exception as e:
             if self.monitor:
@@ -467,6 +502,7 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
             memory_monitor.cancel()
             if self.monitor:
                 self.monitor.stop()
+            return results
                 
     async def _update_queue_priorities(self):
         """Periodically update priorities of items in the queue to prevent starvation"""
