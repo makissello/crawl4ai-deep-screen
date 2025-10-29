@@ -810,19 +810,29 @@ class ContentRelevanceFilter(URLFilter):
 
 
 class PathDepthFilter(URLFilter):
-    """Filter URLs based on path depth after the domain, with keyword bypass capability"""
+    """Filter URLs based on path depth after the domain, with keyword bypass capability.
 
-    __slots__ = ("max_depth", "bypass_keywords", "_keyword_patterns")
+    New behavior:
+    - depth_exempt_keywords: optional list of path segment keywords (e.g., "en", "de")
+      that grant one extra allowed level of depth when present anywhere in the path.
+      Example: with max_depth=2 and depth_exempt_keywords=["en"], a URL like
+      https://example.com/en/a/b (depth=3) is accepted because the presence of
+      "en" allows max_depth to be treated as 3 for that URL.
+    """
+
+    __slots__ = ("max_depth", "bypass_keywords", "_keyword_patterns", "depth_exempt_keywords", "_exempt_set")
 
     def __init__(
         self,
         max_depth: int,
         bypass_keywords: List[str] = None,
+        depth_exempt_keywords: List[str] = None,
         name: str = None,
     ):
         super().__init__(name)
         self.max_depth = max_depth
         self.bypass_keywords = bypass_keywords or []
+        self.depth_exempt_keywords = depth_exempt_keywords or []
         
         # Pre-compile keyword patterns for fast matching
         if self.bypass_keywords:
@@ -832,6 +842,9 @@ class PathDepthFilter(URLFilter):
             self._keyword_patterns = re.compile(pattern, re.IGNORECASE)
         else:
             self._keyword_patterns = None
+
+        # Pre-compute a lowercase set for exempt path segments (case-insensitive)
+        self._exempt_set = frozenset(k.lower() for k in self.depth_exempt_keywords)
 
     @staticmethod
     @lru_cache(maxsize=10000)
@@ -871,9 +884,20 @@ class PathDepthFilter(URLFilter):
         
         # Calculate path depth
         depth = self._path_depth(url)
+
+        # Allow +1 effective depth if any exempt segment is present in the path
+        effective_max_depth = self.max_depth
+        if self._exempt_set:
+            try:
+                parsed = urlparse(url)
+                parts = [p for p in parsed.path.strip("/").split("/") if p]
+                if any(part.lower() in self._exempt_set for part in parts):
+                    effective_max_depth += 1
+            except Exception:
+                pass
         
         # Allow URLs within the depth limit
-        result = depth <= self.max_depth
+        result = depth <= effective_max_depth
         self._update_stats(result)
         return result
 

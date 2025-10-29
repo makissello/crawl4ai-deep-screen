@@ -87,9 +87,9 @@ class URLScorer(ABC):
             raise RuntimeError("Async scorer used in sync path; call ascore(url) instead")
         score = result * self._weight
         self._stats.update(score)
-        # Light-weight INFO log for visibility when enabled by caller's logger level
+        # Light-weight DEBUG log for visibility when enabled by caller's logger level
         try:
-            self._logger.info(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
+            self._logger.debug(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
         except Exception:
             pass
         return score
@@ -102,7 +102,7 @@ class URLScorer(ABC):
         score = result * self._weight
         self._stats.update(score)
         try:
-            self._logger.info(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
+            self._logger.debug(f"scorer={self.__class__.__name__} url={url} score={score:.4f}")
         except Exception:
             pass
         return score

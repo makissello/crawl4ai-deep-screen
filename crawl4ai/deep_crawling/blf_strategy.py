@@ -59,6 +59,10 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self.stats = TraversalStats(start_time=datetime.now())
         self._cancel_event = asyncio.Event()
         self._pages_crawled = 0
+        # Per-run cache to avoid rescoring the same URL multiple times
+        self._score_cache: Dict[str, float] = {}
+        # Per-run cache of filter decisions: True=allowed, False=rejected
+        self._filter_cache: Dict[str, bool] = {}
 
     def _append_discovered_url(self, base_url: str, depth: int) -> None:
         """
@@ -174,10 +178,15 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
             base_url = normalize_url_for_deep_crawl(url, source_url)
             if base_url in visited:
                 continue
-            if not await self.can_process_url(url, new_depth):
+            # Consult cached filter decision first to avoid repeated filter checks/logs
+            allowed = self._filter_cache.get(base_url)
+            if allowed is None:
+                allowed = await self.can_process_url(url, new_depth)
+                self._filter_cache[base_url] = allowed
+            if not allowed:
                 self.stats.urls_skipped += 1
                 continue
-                
+            
             valid_links.append(base_url)
             
         # Record the new depths and add to next_links (do not limit here; we will
@@ -221,13 +230,17 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 continue
 
             link_depth = self._path_depth(url)
-            if self.enforce_depth and link_depth > self.max_depth:
+            """ if self.enforce_depth and link_depth > self.max_depth:
                 self.logger.debug(f"Skipping {url} (depth {link_depth} > max_depth {self.max_depth})")
                 self.stats.urls_skipped += 1
-                continue
+                continue """
 
-            
-            if not await self.can_process_url(url, link_depth):
+            # Consult cached filter decision first to avoid repeated filter checks/logs
+            allowed = self._filter_cache.get(base_url)
+            if allowed is None:
+                allowed = await self.can_process_url(url, link_depth)
+                self._filter_cache[base_url] = allowed
+            if not allowed:
                 self.stats.urls_skipped += 1
                 continue
                 
@@ -290,6 +303,10 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self._pages_crawled = 0
         self._cancel_event = asyncio.Event()
         self.stats = TraversalStats(start_time=datetime.now())
+        # Reset scoring cache for this run
+        self._score_cache.clear()
+        # Reset filter decision cache for this run
+        self._filter_cache.clear()
 
     
 
@@ -329,13 +346,17 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         while not queue.empty() and not self._cancel_event.is_set():
             if self._pages_crawled >= self.max_pages:
                 self.logger.info(f"Max pages limit ({self.max_pages}) reached, stopping crawl")
+                # Clean up scoring cache when stopping due to page limit
+                self._score_cache.clear()
+                # Clean up filter cache when stopping due to page limit
+                self._filter_cache.clear()
                 break
 
-            # Log the current queue contents before popping
+            """ # Log the current queue contents before popping
             queue_items = list(queue._queue)  # _queue is a deque storing internal items
             self.logger.info("Queue contents before batch:")
             for qscore, qdepth, qurl, qparent in queue_items:
-                self.logger.info(f"  URL: {qurl}, Score: {-qscore}, Depth: {qdepth}, Parent: {qparent}")
+                self.logger.info(f"  URL: {qurl}, Score: {-qscore}, Depth: {qdepth}, Parent: {qparent}") """
 
             remaining = self.max_pages - self._pages_crawled
             batch_size = min(self.batch_size, remaining)
@@ -408,6 +429,10 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                         self.logger.info(
                             f"Max pages limit ({self.max_pages}) reached during batch, stopping crawl"
                         )
+                        # Clean up scoring cache when stopping due to page limit
+                        self._score_cache.clear()
+                        # Clean up filter cache when stopping due to page limit
+                        self._filter_cache.clear()
                         break
 
                 if result.success:
@@ -419,9 +444,26 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                         urls_to_score = [u for (u, _) in new_links if u not in visited]
                         # Compute scores concurrently
                         if self.url_scorer:
-                            scores = await asyncio.gather(*[self.url_scorer.ascore(u) for u in urls_to_score])
+                            scores: List[float] = []
+                            tasks: List[asyncio.Task] = []
+                            task_indices: List[int] = []
+                            # Prepare scores list with placeholders and gather tasks for uncached URLs
+                            for idx, u in enumerate(urls_to_score):
+                                if u in self._score_cache:
+                                    scores.append(self._score_cache[u])
+                                else:
+                                    scores.append(0.0)  # placeholder
+                                    tasks.append(asyncio.create_task(self.url_scorer.ascore(u)))
+                                    task_indices.append(idx)
+                            if tasks:
+                                results = await asyncio.gather(*tasks)
+                                for j, res in enumerate(results):
+                                    i = task_indices[j]
+                                    scores[i] = res
+                                    # Memoize the computed score for this run
+                                    self._score_cache[urls_to_score[i]] = res
                         else:
-                            scores = [0 for _ in urls_to_score]
+                            scores = [0.0 for _ in urls_to_score]
 
                         url_parent_map: Dict[str, Optional[str]] = {u: p for (u, p) in new_links}
                         new_depths: Dict[str, int] = {u: depths.get(u, depth + 1) for u in urls_to_score}
@@ -442,3 +484,5 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                                 candidate_parent = url_parent_map.get(candidate_url)
                                 await queue.put((-candidate_score, candidate_depth, candidate_url, candidate_parent))
                                 self.logger.info(f'Enqueued/updated link: {candidate_url} with score {candidate_score}.')
+        # Ensure cache does not linger after run ends
+        self._score_cache.clear()
