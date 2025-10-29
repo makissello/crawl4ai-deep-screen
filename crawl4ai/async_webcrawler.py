@@ -748,12 +748,25 @@ class AsyncWebCrawler:
             stream = config.stream
 
         if stream:
+            # Detect if any deep crawl strategy is in use
+            if isinstance(config, list):
+                deep_enabled = any(getattr(c, "deep_crawl_strategy", None) for c in config if c)
+            else:
+                deep_enabled = bool(getattr(config, "deep_crawl_strategy", None))
 
             async def result_transformer():
-                async for task_result in dispatcher.run_urls_stream(
-                    crawler=self, urls=urls, config=config
-                ):
-                    yield transform_result(task_result)
+                if deep_enabled and isinstance(dispatcher, MemoryAdaptiveDispatcher):
+                    # Stream all pages for deep crawls using dispatcher’s per-page API
+                    async for task_result in dispatcher.run_urls_stream_all_pages(
+                        urls=urls, crawler=self, config=config
+                    ):
+                        yield transform_result(task_result)
+                else:
+                    # Default behavior: one result per input URL
+                    async for task_result in dispatcher.run_urls_stream(
+                        crawler=self, urls=urls, config=config
+                    ):
+                        yield transform_result(task_result)
 
             return result_transformer()
         else:

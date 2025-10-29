@@ -656,6 +656,244 @@ class MemoryAdaptiveDispatcher(BaseDispatcher):
                 self.monitor.stop()
                 
 
+    async def crawl_url_pages(
+        self,
+        url: str,
+        config: Union[CrawlerRunConfig, List[CrawlerRunConfig]],
+        task_id: str,
+        result_queue: asyncio.Queue,
+        retry_count: int = 0,
+    ) -> None:
+        """Crawl a URL and push every page result (for deep-crawl async generators)
+        to the provided queue as an individual CrawlerTaskResult. If the crawl
+        is not a generator, push the single result as-is.
+        """
+        start_time = time.time()
+        error_message = ""
+        memory_usage = peak_memory = 0.0
+
+        # Select appropriate config for this URL
+        selected_config = self.select_config(url, config)
+
+        # If no config matches, emit a failed result and return
+        if selected_config is None:
+            error_message = f"No matching configuration found for URL: {url}"
+            if self.monitor:
+                self.monitor.update_task(
+                    task_id,
+                    status=CrawlStatus.FAILED,
+                    error_message=error_message
+                )
+
+            await result_queue.put(
+                CrawlerTaskResult(
+                    task_id=task_id,
+                    url=url,
+                    result=CrawlResult(
+                        url=url,
+                        html="",
+                        metadata={"status": "no_config_match"},
+                        success=False,
+                        error_message=error_message
+                    ),
+                    memory_usage=0,
+                    peak_memory=0,
+                    start_time=start_time,
+                    end_time=time.time(),
+                    error_message=error_message,
+                    retry_count=retry_count
+                )
+            )
+            return
+
+        process = psutil.Process()
+        start_memory = process.memory_info().rss / (1024 * 1024)
+
+        try:
+            if self.monitor:
+                self.monitor.update_task(
+                    task_id, status=CrawlStatus.IN_PROGRESS, start_time=start_time
+                )
+
+            if self.rate_limiter:
+                await self.rate_limiter.wait_if_needed(url)
+
+            # Execute the crawl
+            result = await self.crawler.arun(url, config=selected_config, session_id=task_id)
+
+            # Measure memory after first call/creation
+            end_memory = process.memory_info().rss / (1024 * 1024)
+            memory_usage = peak_memory = end_memory - start_memory
+
+            # If deep crawl returns an async generator, stream each page
+            if inspect.isasyncgen(result):
+                all_successful = True
+                async for r in result:
+                    if self.rate_limiter and hasattr(r, 'status_code') and r.status_code:
+                        if not self.rate_limiter.update_delay(url, r.status_code):
+                            all_successful = False
+                    await result_queue.put(
+                        CrawlerTaskResult(
+                            task_id=task_id,
+                            url=url,
+                            result=r,
+                            memory_usage=memory_usage,
+                            peak_memory=peak_memory,
+                            start_time=start_time,
+                            end_time=time.time(),
+                            error_message="" if r.success else (getattr(r, 'error_message', '') or ""),
+                            retry_count=retry_count
+                        )
+                    )
+
+                if self.monitor:
+                    self.monitor.update_task(
+                        task_id,
+                        status=CrawlStatus.COMPLETED if all_successful else CrawlStatus.FAILED
+                    )
+            else:
+                # Single result (non-deep-crawl)
+                if self.rate_limiter and hasattr(result, 'status_code') and result.status_code:
+                    if not self.rate_limiter.update_delay(url, result.status_code):
+                        error_message = f"Rate limit retry count exceeded for domain {urlparse(url).netloc}"
+                        if self.monitor:
+                            self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+
+                if not result.success:
+                    error_message = result.error_message if hasattr(result, 'error_message') else ""
+                    if self.monitor:
+                        self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+                elif self.monitor:
+                    self.monitor.update_task(task_id, status=CrawlStatus.COMPLETED)
+
+                await result_queue.put(
+                    CrawlerTaskResult(
+                        task_id=task_id,
+                        url=url,
+                        result=result,
+                        memory_usage=memory_usage,
+                        peak_memory=peak_memory,
+                        start_time=start_time,
+                        end_time=time.time(),
+                        error_message=error_message,
+                        retry_count=retry_count
+                    )
+                )
+
+        except Exception as e:
+            # Emit a failure record
+            if self.monitor:
+                self.monitor.update_task(task_id, status=CrawlStatus.FAILED)
+            await result_queue.put(
+                CrawlerTaskResult(
+                    task_id=task_id,
+                    url=url,
+                    result=CrawlResult(
+                        url=url, html="", metadata={}, success=False, error_message=str(e)
+                    ),
+                    memory_usage=0,
+                    peak_memory=0,
+                    start_time=start_time,
+                    end_time=time.time(),
+                    error_message=str(e),
+                    retry_count=retry_count
+                )
+            )
+
+    async def run_urls_stream_all_pages(
+        self,
+        urls: List[str],
+        crawler: AsyncWebCrawler,
+        config: Union[CrawlerRunConfig, List[CrawlerRunConfig]],
+    ) -> AsyncGenerator[CrawlerTaskResult, None]:
+        """Like run_urls_stream, but if a URL triggers deep crawling (arun returns
+        an async generator), yield a CrawlerTaskResult for each page produced by
+        that generator instead of collapsing to a single result per seed URL.
+        """
+        self.crawler = crawler
+
+        # Start the memory monitor task
+        memory_monitor = asyncio.create_task(self._memory_monitor_task())
+
+        result_queue: asyncio.Queue = asyncio.Queue()
+
+        if self.monitor:
+            self.monitor.start()
+
+        try:
+            # Prepare tasks respecting max_session_permit as a soft limit
+            active_tasks = []
+            pending_urls: List[Tuple[str, str, int, float]] = []
+            for url in urls:
+                task_id = str(uuid.uuid4())
+                enqueue_time = time.time()
+                if self.monitor:
+                    self.monitor.add_task(task_id, url)
+                pending_urls.append((url, task_id, 0, enqueue_time))
+
+            completed_tasks = 0
+            total_tasks = len(pending_urls)
+
+            while completed_tasks < total_tasks:
+                if memory_monitor.done():
+                    exc = memory_monitor.exception()
+                    if exc:
+                        for t in active_tasks:
+                            t.cancel()
+                        raise exc
+
+                # Fill available slots
+                if not self.memory_pressure_mode:
+                    slots = self.max_session_permit - len(active_tasks)
+                    while slots > 0 and pending_urls:
+                        url, task_id, retry_count, enqueue_time = pending_urls.pop(0)
+
+                        task = asyncio.create_task(
+                            self.crawl_url_pages(url, config, task_id, result_queue, retry_count)
+                        )
+                        active_tasks.append(task)
+
+                        if self.monitor:
+                            wait_time = time.time() - enqueue_time
+                            self.monitor.update_task(
+                                task_id,
+                                wait_time=wait_time,
+                                status=CrawlStatus.IN_PROGRESS
+                            )
+                        slots -= 1
+
+                # Drain any available page results first
+                while True:
+                    try:
+                        item = result_queue.get_nowait()
+                        yield item
+                    except asyncio.QueueEmpty:
+                        break
+
+                # Progress tasks
+                if active_tasks:
+                    done, pending = await asyncio.wait(
+                        active_tasks, timeout=0.1, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    completed_tasks += len(done)
+                    active_tasks = list(pending)
+                else:
+                    await asyncio.sleep(self.check_interval / 2)
+
+                # Attempt to drain again to reduce latency
+                while True:
+                    try:
+                        item = result_queue.get_nowait()
+                        yield item
+                    except asyncio.QueueEmpty:
+                        break
+
+        finally:
+            memory_monitor.cancel()
+            if self.monitor:
+                self.monitor.stop()
+
+
 class SemaphoreDispatcher(BaseDispatcher):
     def __init__(
         self,

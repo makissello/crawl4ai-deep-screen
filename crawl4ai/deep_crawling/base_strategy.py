@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator, Optional, Set, List, Dict
 from functools import wraps
+import copy
 from contextvars import ContextVar
 from .._types import AsyncWebCrawler, CrawlerRunConfig, CrawlResult, RunManyReturn
 
@@ -21,7 +22,9 @@ class DeepCrawlDecorator:
             if config and config.deep_crawl_strategy and not self.deep_crawl_active.get():
                 token = self.deep_crawl_active.set(True)
                 # Await the arun call to get the actual result object.
-                result_obj = await config.deep_crawl_strategy.arun(
+                # Clone the strategy to avoid shared state across concurrent seeds
+                strategy = copy.deepcopy(config.deep_crawl_strategy)
+                result_obj = await strategy.arun(
                     crawler=self.crawler,
                     start_url=url,
                     config=config
