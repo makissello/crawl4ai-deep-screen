@@ -734,6 +734,59 @@ class DomainFilterWithoutSubdomains(URLFilter):
         return False
 
 
+class URLBlocklistFilter(URLFilter):
+    """Reject URLs that appear in a provided blocklist.
+
+    Features:
+    - Optional case-insensitive matching
+    - Optional normalization of trailing slashes (treats "/a" and "/a/" equally)
+    """
+
+    __slots__ = ("_blocked", "_case_insensitive", "_normalize_slash")
+
+    def __init__(
+        self,
+        blocked_urls: Union[str, List[str], Set[str]],
+        case_insensitive: bool = False,
+        normalize_trailing_slash: bool = True,
+        name: str = None,
+    ):
+        super().__init__(name)
+        self._case_insensitive = case_insensitive
+        self._normalize_slash = normalize_trailing_slash
+
+        if isinstance(blocked_urls, (str,)):
+            blocked_iter = [blocked_urls]
+        else:
+            blocked_iter = list(blocked_urls)
+
+        def _normalize(u: str) -> str:
+            if not isinstance(u, str):
+                return u
+            s = u
+            if self._case_insensitive:
+                s = s.lower()
+            if self._normalize_slash:
+                # Keep a single trailing slash policy: remove if present (except root)
+                if len(s) > 1 and s.endswith("/"):
+                    s = s[:-1]
+            return s
+
+        self._blocked = frozenset(_normalize(u) for u in blocked_iter)
+
+    @lru_cache(maxsize=10000)
+    def apply(self, url: str) -> bool:
+        s = url
+        if self._case_insensitive:
+            s = s.lower()
+        if self._normalize_slash and len(s) > 1 and s.endswith("/"):
+            s = s[:-1]
+
+        result = s not in self._blocked
+        self._update_stats(result)
+        return result
+
+
 class ContentRelevanceFilter(URLFilter):
     """BM25-based relevance filter using head section content"""
 

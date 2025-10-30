@@ -14,6 +14,7 @@ from .filters import (
     URLPatternFilterCaseInsensitive,
     FilterStats,
     ContentRelevanceFilter,
+    URLBlocklistFilter,
     PathDepthFilter,
     SEOFilter
 )
@@ -47,6 +48,7 @@ __all__ = [
     "URLPatternFilterCaseInsensitive",
     "FilterStats",
     "ContentRelevanceFilter",
+    "URLBlocklistFilter",
     "PathDepthFilter",
     "SEOFilter",
     "KeywordRelevanceScorer",
