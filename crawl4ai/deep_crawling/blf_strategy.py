@@ -63,6 +63,9 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self._score_cache: Dict[str, float] = {}
         # Per-run cache of filter decisions: True=allowed, False=rejected
         self._filter_cache: Dict[str, bool] = {}
+        # Track crawl order index and per-URL total scores
+        self._crawl_index_counter: int = 0
+        self.crawl_order: Dict[str, int] = {}
 
     def _append_discovered_url(self, base_url: str, depth: int) -> None:
         """
@@ -307,6 +310,9 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         self._score_cache.clear()
         # Reset filter decision cache for this run
         self._filter_cache.clear()
+        # Reset crawl order tracking
+        self._crawl_index_counter = 0
+        self.crawl_order.clear()
 
     
 
@@ -410,6 +416,10 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                         self.max_pages += 1
                         self.logger.info(f"Sitemap URL detected: {result_url}. Increased max_pages to {self.max_pages}")
                     else:
+                        # Assign crawl order index and record total score for this crawled URL
+                        result.metadata["crawl_index"] = self._crawl_index_counter
+                        self.crawl_order[result_url] = self._crawl_index_counter
+                        self._crawl_index_counter += 1
                         self._pages_crawled += 1
 
                 # Always yield the result we just processed
