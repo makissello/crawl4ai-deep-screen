@@ -343,11 +343,11 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
         are popped first (since PriorityQueue is min-heap based).
         """
         queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
-        await queue.put((0, 0, start_url, None))  # initial URL (score=0)
+        await queue.put((-1, 0, start_url, None))  # initial URL (score=1, stored as -1 in queue)
         visited: Set[str] = set()
         depths: Dict[str, int] = {start_url: 0}
         # Track best (highest) known score for each URL so we can update priorities
-        best_scores: Dict[str, float] = {start_url: 0.0}
+        best_scores: Dict[str, float] = {start_url: 1.0}
 
         while not queue.empty() and not self._cancel_event.is_set():
             if self._pages_crawled >= self.max_pages:
