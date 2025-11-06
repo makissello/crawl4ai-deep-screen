@@ -409,6 +409,17 @@ class BestLinkFirstCrawlingStrategy(DeepCrawlStrategy):
                 result.metadata["depth"] = depth
                 result.metadata["parent_url"] = parent_url
                 result.metadata["score"] = -score  # store actual positive score
+                # Attach company_id from run config shared_data when provided
+                try:
+                    company_id = getattr(config, "shared_data", {}).get("company_id") if hasattr(config, "shared_data") else None
+                    if company_id is not None:
+                        result.metadata["company_id"] = company_id
+                    start_url_sd = getattr(config, "shared_data", {}).get("start_url") if hasattr(config, "shared_data") else None
+                    if start_url_sd is not None:
+                        result.metadata["start_url"] = start_url_sd
+                except Exception:
+                    # Be resilient if shared_data is not a dict-like
+                    pass
 
                 if result.success:
                     # Check if this is a sitemap URL - if so, increase max_pages by 1 and don't count it
