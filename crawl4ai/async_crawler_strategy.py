@@ -710,11 +710,29 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                             )
                             redirected_url = page.url
                         except Error as e_http:
-                            raise RuntimeError(
-                                "Failed on navigating ACS-GOTO after HTTPS SSL error and HTTP retry:\n"
-                                f"HTTPS error: {error_str}\n"
-                                f"HTTP error: {str(e_http)}"
-                            ) from e_http
+                            http_error_str = str(e_http)
+                            # Some browsers surface a synthetic chrome-error:// page for
+                            # certain network failures. In that case, treat it like a
+                            # soft failure: log and continue with no response so the
+                            # rest of the pipeline can still run.
+                            if "chrome-error://chromewebdata/" in http_error_str:
+                                if self.logger:
+                                    self.logger.warning(
+                                        message=(
+                                            "HTTP navigation resulted in chrome-error page; "
+                                            "continuing without response: "
+                                            f"{http_url}"
+                                        ),
+                                        tag="GOTO",
+                                        params={"url": http_url},
+                                    )
+                                response = None
+                            else:
+                                raise RuntimeError(
+                                    "Failed on navigating ACS-GOTO after HTTPS SSL error and HTTP retry:\n"
+                                    f"HTTPS error: {error_str}\n"
+                                    f"HTTP error: {http_error_str}"
+                                ) from e_http
                     else:
                         raise RuntimeError(f"Failed on navigating ACS-GOTO:\n{error_str}")
 
