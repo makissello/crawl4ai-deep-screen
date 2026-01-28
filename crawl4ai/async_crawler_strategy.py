@@ -683,17 +683,40 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                     )
                     redirected_url = page.url
                 except Error as e:
+                    error_str = str(e)
                     # Allow navigation to be aborted when downloading files
                     # This is expected behavior for downloads in some browser engines
-                    if 'net::ERR_ABORTED' in str(e) and self.browser_config.accept_downloads:
+                    if 'net::ERR_ABORTED' in error_str and self.browser_config.accept_downloads:
                         self.logger.info(
                             message=f"Navigation aborted, likely due to file download: {url}",
                             tag="GOTO",
                             params={"url": url},
                         )
                         response = None
+                    # If HTTPS fails due to SSL version/cipher mismatch, retry with HTTP
+                    elif 'net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH' in error_str and url.startswith("https://"):
+                        if self.logger:
+                            self.logger.warning(
+                                message=f"HTTPS navigation failed due to SSL issue, retrying with HTTP: {url}",
+                                tag="GOTO",
+                                params={"url": url},
+                            )
+                        http_url = "http://" + url[len("https://") :]
+                        try:
+                            response = await page.goto(
+                                http_url,
+                                wait_until=config.wait_until,
+                                timeout=config.page_timeout,
+                            )
+                            redirected_url = page.url
+                        except Error as e_http:
+                            raise RuntimeError(
+                                "Failed on navigating ACS-GOTO after HTTPS SSL error and HTTP retry:\n"
+                                f"HTTPS error: {error_str}\n"
+                                f"HTTP error: {str(e_http)}"
+                            ) from e_http
                     else:
-                        raise RuntimeError(f"Failed on navigating ACS-GOTO:\n{str(e)}")
+                        raise RuntimeError(f"Failed on navigating ACS-GOTO:\n{error_str}")
 
                 await self.execute_hook(
                     "after_goto", page, context=context, url=url, response=response, config=config
