@@ -693,8 +693,11 @@ class AsyncPlaywrightCrawlerStrategy(AsyncCrawlerStrategy):
                             params={"url": url},
                         )
                         response = None
-                    # If HTTPS fails due to SSL version/cipher mismatch, retry with HTTP
-                    elif 'net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH' in error_str and url.startswith("https://"):
+                    # If HTTPS fails due to SSL version/cipher mismatch or connection refused, retry with HTTP
+                    elif any(
+                        err in error_str
+                        for err in ['net::ERR_SSL_PROTOCOL_ERROR', 'net::ERR_SSL_VERSION_OR_CIPHER_MISMATCH', 'net::ERR_CONNECTION_REFUSED']
+                    ) and url.startswith("https://"):
                         if self.logger:
                             self.logger.warning(
                                 message=f"HTTPS navigation failed due to SSL issue, retrying with HTTP: {url}",
